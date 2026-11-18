@@ -70,6 +70,26 @@ command it shows up in the regular plugin list and updates like any other plugin
 Updates arrive through **System → Firmware → Plugins** like any other plugin. Removing `os-netdash` keeps your data in
 `/usr/local/netdash/data`, the integration settings in `/usr/local/netdash/secrets.json` and `/usr/local/etc/netdash.conf`.
 
+## Android app
+
+Every release also carries `netdash-android-<version>.apk` (Android 10 or newer). Install it with
+[Obtainium](https://github.com/ImranR98/Obtainium): **Add app** → `https://github.com/Noronus/netdash` → **Add**. Obtainium
+only looks at the APK in each release and installs updates from there. Or download the APK from
+[Releases](https://github.com/Noronus/netdash/releases/latest) and open it.
+
+The app shows the netdash UI and adds what a browser tab lacks on a phone:
+
+- **Setup**: `192.168.1.1` becomes `https://192.168.1.1:8098`; a reverse proxy domain works too. If the default gateway
+  answers on port 8098, the app suggests it.
+- **Self-signed certificate** of the web GUI: the app shows its SHA-256 fingerprint once and remembers it. If the
+  certificate changes, it asks again.
+- **Downloads** (WireGuard configs, pcap captures) go to the Downloads folder. Clipboard, back button, dark mode and the
+  system bar colors work like in a native app; external links open in the browser.
+- **Change server**: long-press the app icon → *Server ändern*, the error screen, or *Anderen Server verbinden* on the
+  login page.
+
+No analytics; the app talks only to your netdash server.
+
 ## Configuration
 
 `/usr/local/etc/netdash.conf` (JSON, created on first install):
@@ -143,6 +163,9 @@ OPN_HOST=root@192.168.1.1 ./deploy.sh   # copy backend, plugin files and fronten
 - `plugin/src/`: files installed below `/usr/local` (rc.d service, configd actions, menu entry, ACL).
 - `tools/build-pkg.sh VERSION OUTDIR [KEY]`: builds the packages and the repository on FreeBSD; the release workflow
   runs it in a FreeBSD VM for every `v*` tag and publishes the signed repository on GitHub Pages.
+- `android/`: the Android app (Kotlin, WebView). `cd android && ./gradlew assembleDebug`. Its version is `VERSION` from
+  `backend/main.py`; the release workflow signs it (secrets `NETDASH_KEYSTORE_B64`, `NETDASH_KEYSTORE_PASSWORD`) and
+  attaches it to the release.
 
 ## License
 

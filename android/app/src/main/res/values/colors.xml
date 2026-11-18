@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#2F6BFF</color>
+    <color name="nd_bg">#F3F5F9</color>
+    <color name="nd_bg_2">#EEF1F6</color>
+    <color name="nd_surface">#FFFFFF</color>
+    <color name="nd_text">#111521</color>
+    <color name="nd_text_2">#58617A</color>
+    <color name="nd_accent">#2F6BFF</color>
+    <color name="nd_border">#E2E6EE</color>
+    <color name="nd_bad">#E5484D</color>
+</resources>

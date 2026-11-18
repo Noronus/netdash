@@ -2,6 +2,7 @@ name: Release
 
 # Builds os-netdash + os-netdash-repo in a FreeBSD VM (same major version as OPNsense 26.x),
 # signs the pkg repository and publishes it on GitHub Pages: https://noronus.github.io/netdash/repo
+# Also builds the signed Android app (android/); every release carries the APK, which is what Obtainium installs.
 on:
   push:
     tags: ["v*"]
@@ -17,7 +18,45 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"
+          else v="$(sed -n 's/^VERSION = "\(.*\)"/\1/p' backend/main.py)"; fi
+          echo "NETDASH_VERSION=$v" >> "$GITHUB_ENV"
+
+      # signed with the same key every time, otherwise Android (and Obtainium) refuse the update
+      - name: Build signed APK
+        working-directory: android
+        env:
+          KEYSTORE_B64: ${{ secrets.NETDASH_KEYSTORE_B64 }}
+          NETDASH_KEYSTORE_PASSWORD: ${{ secrets.NETDASH_KEYSTORE_PASSWORD }}
+        run: |
+          [ -n "$KEYSTORE_B64" ] || { echo "::error::secret NETDASH_KEYSTORE_B64 missing"; exit 1; }
+          export NETDASH_KEYSTORE="$RUNNER_TEMP/release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$NETDASH_KEYSTORE"
+          ./gradlew --no-daemon assembleRelease
+          rm -f "$NETDASH_KEYSTORE"
+          mkdir -p ../out-apk
+          cp app/build/outputs/apk/release/netdash-android-$NETDASH_VERSION-release.apk ../out-apk/netdash-android-$NETDASH_VERSION.apk
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: apk
+          path: out-apk/
+
   build:
+    needs: android
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -67,11 +106,16 @@ jobs:
         with:
           path: site
 
+      - uses: actions/download-artifact@v5
+        with:
+          name: apk
+          path: out-apk
+
       - name: GitHub release
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" out/repo/All/*.pkg --title "netdash $VERSION" --generate-notes --verify-tag
+        run: gh release create "$GITHUB_REF_NAME" out/repo/All/*.pkg out-apk/*.apk --title "netdash $VERSION" --generate-notes --verify-tag
 
   deploy:
     needs: build

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- netdash runs in the LAN: allow plain HTTP if someone needs it and trust user-installed CAs (homelab CA).
+     Self-signed certificates of the firewall are handled by explicit trust-on-first-use in the app. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Netdash" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/nd_accent</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorPrimaryContainer">@color/nd_accent</item>
+        <item name="colorOnPrimaryContainer">#FFFFFF</item>
+        <item name="colorSecondaryContainer">@color/nd_bg_2</item>
+        <item name="colorOnSecondaryContainer">@color/nd_text</item>
+        <item name="colorError">@color/nd_bad</item>
+        <item name="android:colorBackground">@color/nd_bg</item>
+        <item name="colorSurface">@color/nd_surface</item>
+        <item name="colorOnSurface">@color/nd_text</item>
+        <item name="colorOnSurfaceVariant">@color/nd_text_2</item>
+        <item name="colorSurfaceContainerHigh">@color/nd_surface</item>
+        <item name="colorSurfaceContainerHighest">@color/nd_surface</item>
+        <item name="colorOutline">@color/nd_border</item>
+        <item name="android:windowBackground">@color/nd_bg</item>
+        <item name="android:forceDarkAllowed">false</item>
+    </style>
+</resources>

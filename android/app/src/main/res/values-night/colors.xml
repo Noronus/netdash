@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="nd_bg">#0B0D12</color>
+    <color name="nd_bg_2">#0F1218</color>
+    <color name="nd_surface">#141821</color>
+    <color name="nd_text">#E8EBF1</color>
+    <color name="nd_text_2">#9AA3B4</color>
+    <color name="nd_accent">#6D9CFF</color>
+    <color name="nd_border">#232A37</color>
+    <color name="nd_bad">#F2555A</color>
+</resources>

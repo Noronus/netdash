@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">netdash</string>
+    <string name="setup_title">Server verbinden</string>
+    <string name="setup_heading">Mit netdash verbinden</string>
+    <string name="setup_body">Adresse der OPNsense mit netdash, z. B. 192.168.1.1 (Port 8098 wird ergänzt) oder https://net.example.com.</string>
+    <string name="setup_hint">Adresse</string>
+    <string name="setup_connect">Verbinden</string>
+    <string name="setup_cancel">Abbrechen</string>
+    <string name="setup_found">Gefunden: %1$s</string>
+    <string name="setup_searching">Suche im Netzwerk …</string>
+    <string name="setup_testing">Verbinde mit %1$s …</string>
+    <string name="setup_current">Aktuell: %1$s</string>
+    <string name="setup_empty">Bitte eine Adresse eingeben.</string>
+    <string name="setup_not_netdash">Unter %1$s antwortet kein netdash.</string>
+    <string name="setup_unreachable">%1$s ist nicht erreichbar: %2$s</string>
+    <string name="setup_http_warning">Ohne HTTPS klappt die Anmeldung nicht: netdash setzt das Sitzungs-Cookie nur über HTTPS.</string>
+    <string name="version">Version %1$s</string>
+
+    <string name="cert_title">Zertifikat prüfen</string>
+    <string name="cert_changed_title">Zertifikat hat sich geändert</string>
+    <string name="cert_body">%1$s nutzt ein Zertifikat, dem Android nicht vertraut. Bei der OPNsense ist das meist das selbst signierte Zertifikat der Weboberfläche.\n\nVergleiche den Fingerabdruck mit dem in OPNsense unter System → Zertifikate.</string>
+    <string name="cert_changed_body">%1$s zeigt ein anderes Zertifikat als beim letzten Mal. Das passiert nach einer Zertifikatserneuerung, kann aber auch ein Angriff sein.\n\nVergleiche den Fingerabdruck mit dem in OPNsense unter System → Zertifikate.</string>
+    <string name="cert_details">Ausgestellt für: %1$s\nAusgestellt von: %2$s\nGültig bis: %3$s\n\nSHA-256:\n%4$s</string>
+    <string name="cert_trust">Vertrauen</string>
+    <string name="cert_reject">Abbrechen</string>
+
+    <string name="error_title">Keine Verbindung</string>
+    <string name="error_retry">Erneut versuchen</string>
+    <string name="error_change_server">Server ändern</string>
+    <string name="cert_checking">Zertifikat von %1$s prüfen</string>
+    <string name="error_cert_rejected">Das Zertifikat von %1$s wurde nicht akzeptiert.</string>
+
+    <string name="saved">Gespeichert in Downloads: %1$s</string>
+    <string name="open">Öffnen</string>
+    <string name="no_app">Keine App zum Öffnen gefunden</string>
+    <string name="download_failed">Download fehlgeschlagen: %1$s</string>
+    <string name="copied">Kopiert</string>
+    <string name="no_browser">Kein Browser gefunden</string>
+
+    <string name="shortcut_server">Server ändern</string>
+    <string name="shortcut_server_long">netdash-Server ändern</string>
+</resources>
