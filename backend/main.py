@@ -39,7 +39,7 @@ BASE = os.environ.get("NETDASH_BASE", "/usr/local/netdash")
 WWW = os.path.join(BASE, "www")
 CONF_FILE = os.environ.get("NETDASH_CONF", "/usr/local/etc/netdash.conf")
 SESSION_DAYS = 30
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 
 def load_conf():
