@@ -59,7 +59,7 @@ command it shows up in the regular plugin list and updates like any other plugin
    pkg add https://noronus.github.io/netdash/os-netdash-repo.pkg
    ```
 
-   This installs `os-netdash-repo`: the repository definition and its signing fingerprint.
+   This installs `os-netdash-repo`: the repository definition and its signing key.
 2. In the web GUI open **System → Firmware → Plugins**, reload the list and install **os-netdash**.
 3. Open **Services → netdash** (or `https://<LAN address of the firewall>:8098/`) and sign in with an
    OPNsense administrator account.

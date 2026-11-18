@@ -57,16 +57,16 @@ pkg create -M "$W/netdash.ucl" -p "$W/netdash.plist" -r "$S" -o "$OUT/repo/All"
 
 # ---------------------------------------------------------------- os-netdash-repo
 R=$W/repo
-mkdir -p "$R/usr/local/etc/pkg/repos" "$R/usr/local/etc/pkg/fingerprints/netdash/trusted" "$R/usr/local/etc/pkg/fingerprints/netdash/revoked"
+mkdir -p "$R/usr/local/etc/pkg/repos"
 if [ -n "$KEY" ]; then
-	openssl rsa -in "$KEY" -pubout -out "$W/netdash.pub" 2>/dev/null
-	printf 'function: "sha256"\nfingerprint: "%s"\n' "$(sha256 -q "$W/netdash.pub")" > "$R/usr/local/etc/pkg/fingerprints/netdash/trusted/netdash.fingerprint"
-	SIG='signature_type: "fingerprints",
-  fingerprints: "/usr/local/etc/pkg/fingerprints/netdash",'
+	# pkg repo signs with the RSA key; clients check that signature against this public key
+	mkdir -p "$R/usr/local/etc/pkg/keys"
+	openssl rsa -in "$KEY" -pubout -out "$R/usr/local/etc/pkg/keys/netdash.pub" 2>/dev/null
+	SIG='signature_type: "pubkey",
+  pubkey: "/usr/local/etc/pkg/keys/netdash.pub",'
 else
 	SIG='signature_type: "none",'
 fi
-touch "$R/usr/local/etc/pkg/fingerprints/netdash/revoked/.keep"
 cat > "$R/usr/local/etc/pkg/repos/netdash.conf" <<C
 netdash: {
   url: "$URL",
