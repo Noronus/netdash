@@ -300,6 +300,8 @@ class App:
                 if p["lldp"]:
                     lldp_at[p["name"]] = p["lldp"][0]
         self.sw_uplink = uplink
+        if self.switch:
+            self.switch.uplink = uplink
         names_by_mac = {m: d.get("name") for m, d in devs.items()}
         blocked = set(self.db.kv_get("blocked_macs", []))
         out = []

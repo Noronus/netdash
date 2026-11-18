@@ -32,12 +32,10 @@ export default function Devices({ full, q }: { full: Full; q?: string }) {
   let netFilter = net
   if (query.startsWith('net:')) { netFilter = q!.slice(4); query = '' }
 
-  let list = full.devices.filter((d) => {
+  // everything except the WLAN/LAN choice, so the counts on those buttons match the current view
+  const base = full.devices.filter((d) => {
     if (status === 'online' && !d.online) return false
     if (status === 'offline' && d.online) return false
-    // LAN = everything that is not WiFi (devices without a known connection are almost always wired)
-    if (link === 'wifi' && d.link !== 'wifi') return false
-    if (link === 'wired' && d.link === 'wifi') return false
     if (netFilter && d.network !== netFilter) return false
     if (query) {
       const hay = [d.name, d.hostname, d.ip, d.mac, d.vendor, ...(d.ipv4 || []), d.network, d.wifi?.essid].join(' ').toLowerCase()
@@ -45,6 +43,9 @@ export default function Devices({ full, q }: { full: Full; q?: string }) {
     }
     return true
   })
+  const nWifi = base.filter((d) => d.link === 'wifi').length
+  // LAN = everything that is not WiFi (devices without a known connection are almost always wired)
+  let list = base.filter((d) => link === 'all' || (link === 'wifi' ? d.link === 'wifi' : d.link !== 'wifi'))
   const [col, dir] = sort
   const val = (d: Device): any => {
     switch (col) {
@@ -75,8 +76,8 @@ export default function Devices({ full, q }: { full: Full; q?: string }) {
   return (
     <>
       <div className="filters">
-        <Seg value={status} onChange={setStatus} options={[['online', `Online ${onCount}`], ['all', `Alle ${full.devices.length}`], ['offline', 'Offline']]} />
-        <Seg value={link} onChange={setLink} options={[['all', 'Alle'], ['wifi', 'WLAN'], ['wired', 'LAN']]} />
+        <Seg value={status} onChange={setStatus} options={[['online', `Online ${onCount}`], ['all', `Alle ${full.devices.length}`], ['offline', `Offline ${full.devices.length - onCount}`]]} />
+        <Seg value={link} onChange={setLink} options={[['all', `Alle ${base.length}`], ['wifi', `WLAN ${nWifi}`], ['wired', `LAN ${base.length - nWifi}`]]} />
         <select className="input" value={netFilter} onChange={(e) => { setNet(e.target.value); if (q?.startsWith('net:')) go('devices') }}>
           <option value="">Alle Netze</option>
           {nets.map((n) => <option key={n} value={n}>{n}</option>)}

@@ -7,7 +7,7 @@ import { api, Device, Full, SwPort } from '../api'
 import { openDevice, wanRates } from '../App'
 import { speedColor, speedLabel } from '../components/Attach'
 import { Badge, DevIcon, Signal, SrcError } from '../components/ui'
-import { rate } from '../format'
+import { ago, rate } from '../format'
 
 function DevChip({ d, sub, hint, onAssign }: { d: Device; sub?: React.ReactNode; hint?: string; onAssign?: (d: Device) => void }) {
   const tip = [d.name, d.ip || d.mac, hint, d.vendor, d.online ? 'online' : 'offline'].filter(Boolean).join(' · ')
@@ -81,7 +81,8 @@ export default function Topology({ full }: { full: Full }) {
   const trunk = full.interfaces.find((i) => i.kind === 'port')
   const uplink = sw?.uplink || undefined
   const apMacs = new Set((full.unifi_devices || []).filter((d) => d.type === 'uap').map((d) => d.mac))
-  const cols = (sw?.ports || []).filter((p) => p.up && p.name !== uplink)
+  // ports with a link, plus ports where a device that is off now was last seen (kept until another device is plugged in)
+  const cols = (sw?.ports || []).filter((p) => p.name !== uplink && (p.up || devs.some((d) => d.attach?.kind === 'switch' && d.attach.port === p.name)))
   const attached = new Set(devs.filter((d) => d.attach).map((d) => d.mac))
   const wanSide = devs.filter((d) => d.attach?.kind === 'firewall' && d.attach.wan)
   const gwIps = new Set((full.gateways || []).map((g) => g.address))
@@ -171,7 +172,8 @@ export default function Topology({ full }: { full: Full }) {
                 <div key={p.name} id={'tp-' + p.name} className={'tcol' + (sel === p.name ? ' sel' : '')}>
                   <div className="row gap6" style={{ marginBottom: 8, cursor: 'pointer' }} onClick={() => setPortEdit(p.name)} title="Port-Einstellungen">
                     <b>{p.name}</b>
-                    <span className="badge" style={{ color: speedColor(p.speed) }}>{speedLabel(p.speed)} {p.form === 'sfp' ? 'SFP+' : 'RJ45'}</span>
+                    {p.up ? <span className="badge" style={{ color: speedColor(p.speed) }}>{speedLabel(p.speed)} {p.form === 'sfp' ? 'SFP+' : 'RJ45'}</span>
+                      : <span className="badge" title="Port ohne Link, zuletzt gesehenes Gerät">kein Link · {p.form === 'sfp' ? 'SFP+' : 'RJ45'}</span>}
                     <span className="dim ell" style={{ fontSize: 12 }}>{p.descr}</span>
                   </div>
                   {hostDev && <DevChip d={hostDev} hint={isAp ? `Access Point · ${wifi.length} Clients` : behind.length ? behind.length + ' Geräte dahinter' : undefined}
@@ -191,7 +193,9 @@ export default function Topology({ full }: { full: Full }) {
                       <More items={[...behind].sort((a, b) => Number(b.online) - Number(a.online) || (b.up + b.down) - (a.up + a.down)).map((d) => <DevChip key={d.mac} d={d} />)} />
                     </div>
                   )}
-                  <More items={here.map((d) => <DevChip key={d.mac} d={d} hint={d.attach?.stale ? 'zuletzt an diesem Port gesehen' : d.attach?.manual ? 'manuell zugewiesen' : undefined} sub={d.attach?.stale ? <span>{d.ip} · zuletzt gesehen</span> : undefined} />)} />
+                  <More items={[...here].sort((a, b) => Number(b.online) - Number(a.online)).map((d) => <DevChip key={d.mac} d={d}
+                    hint={d.attach?.stale ? `zuletzt an diesem Port gesehen ${ago(d.attach.stale)}, bleibt hier bis ein anderes Gerät eingesteckt wird` : d.attach?.manual ? 'manuell zugewiesen' : undefined}
+                    sub={d.attach?.stale ? <span>{d.ip} · {d.online ? 'zuletzt gesehen' : 'aus'} {ago(d.attach.stale)}</span> : undefined} />)} />
                   {!hostDev && !host && !here.length && (() => {
                     const guess = guesses.get(p.name)
                     return guess ? <><DevChip d={guess} hint={`laut Port-Name „${p.descr}“ (gerade keine MAC am Port)`} sub={<span>{guess.ip} · laut Port-Name</span>} /></> : <div className="dim" style={{ fontSize: 12 }}>Gerät unbekannt (MAC nicht zugeordnet)</div>

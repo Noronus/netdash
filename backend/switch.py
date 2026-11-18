@@ -6,6 +6,7 @@ Backbone body {"_ds=1&username=..&password=..&_de=1": {}}. The session is tied t
 import base64
 import http.cookiejar
 import json
+import os
 import re
 import secrets
 import threading
@@ -80,8 +81,27 @@ class Switch:
         self.op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar))
         self.logged_in = 0
         self.lock = threading.Lock()
-        self.sticky = {}
+        self.sticky = self._load_sticky()   # mac -> (port, vlan, last seen); kept until another device shows up there
+        self.uplink = None                  # set by the app (port with the firewall's own MACs)
         self.unsaved = False
+
+    STICKY_FILE = os.path.join(os.environ.get("NETDASH_DATA", "/usr/local/netdash/data"), "switch-ports.json")
+
+    def _load_sticky(self):
+        try:
+            with open(self.STICKY_FILE) as f:
+                return {m: tuple(v) for m, v in json.load(f).items()}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_sticky(self):
+        tmp = self.STICKY_FILE + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(self.sticky, f)
+            os.replace(tmp, self.STICKY_FILE)
+        except OSError:
+            pass
 
     def enabled(self):
         return bool(self.base and self.cfg.get("user") and self.cfg.get("pass"))
@@ -269,20 +289,33 @@ class Switch:
 
         per_port = {}
         now_ts = time.time()
-        live = set()
+        live = {}
         for m in macs:
-            mac = _norm_mac(m.get("macAddr"))
-            live.add(mac)
-            per_port.setdefault(m.get("port"), []).append({"mac": mac, "vlan": m.get("vlan")})
-            self.sticky[mac] = (m.get("port"), m.get("vlan"), now_ts)
-        # the switch forgets idle MACs after its aging time; remember the last port for 24 h
+            live[_norm_mac(m.get("macAddr"))] = (m.get("port"), m.get("vlan"))
+        # The switch forgets idle MACs after its aging time, and devices that are off are gone from the table.
+        # Remember the last port of every device until a new device is plugged into that port. Ports with
+        # several devices behind them (LLDP neighbour, uplink, more than 4 MACs) never evict.
+        lldp_ports = {l.get("localPort") for l in lldp}
+        count = {}
+        for port, _ in live.values():
+            count[port] = count.get(port, 0) + 1
+        for mac, (port, vlan) in live.items():
+            prev = self.sticky.get(mac)
+            if (prev is None or prev[0] != port) and port not in lldp_ports and port != self.uplink and count[port] <= 4:
+                for other, (op, _v, _t) in list(self.sticky.items()):
+                    if op == port and other not in live:
+                        del self.sticky[other]
+            self.sticky[mac] = (port, vlan, now_ts)
+            per_port.setdefault(port, []).append({"mac": mac, "vlan": vlan})
         for mac, (port, vlan, ts) in list(self.sticky.items()):
             if mac in live:
                 continue
-            if now_ts - ts > 86400:
+            shared = port in lldp_ports or port == self.uplink or count.get(port, 0) > 4
+            if shared and now_ts - ts > 86400:   # access point / uplink: forget after a day, or every guest piles up
                 del self.sticky[mac]
                 continue
             per_port.setdefault(port, []).append({"mac": mac, "vlan": vlan, "stale": int(ts)})
+        self._save_sticky()
         lldp_by = {}
         for l in lldp:
             lldp_by.setdefault(l.get("localPort"), []).append({
