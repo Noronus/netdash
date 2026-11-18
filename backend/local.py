@@ -165,6 +165,20 @@ class Interfaces:
 class Devices:
     """Builds the device list from ARP/NDP, DHCP leases, static mappings and hostwatch."""
 
+    MGMT_RE = re.compile(r"mng|mgmt|manage|ipmi|oob", re.I)
+
+    def _is_mgmt(self, ip):
+        """devices with several addresses: one in a management network is not the main address"""
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        for i in self.ifaces.by_dev.values():
+            if self.MGMT_RE.search(i.get("descr") or ""):
+                if any(a in ipaddress.ip_network(n, strict=False) for n in i.get("nets") or []):
+                    return True
+        return False
+
     def __init__(self, state, db, ifaces, cfg):
         self.state = state
         self.db = db
@@ -324,7 +338,7 @@ class Devices:
                 online_since = int(t)
             if not online:
                 online_since = None
-            primary_v4 = sorted(v4, key=lambda ip: (ip != (st or {}).get("ip"), False, ip))[0] if v4 else ((l or {}).get("ip") or (st or {}).get("ip"))
+            primary_v4 = sorted(v4, key=lambda ip: (ip != (st or {}).get("ip"), self._is_mgmt(ip), ip))[0] if v4 else ((l or {}).get("ip") or (st or {}).get("ip"))
             if s and primary_v4 in s["ipif"]:
                 netif = s["ipif"][primary_v4]
             hostname = (st or {}).get("hostname") or (l or {}).get("hostname") or ex.get("hostname")
