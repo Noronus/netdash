@@ -94,7 +94,7 @@ export default function Devices({ full, q }: { full: Full; q?: string }) {
                 {th('ip', 'IP')}
                 <th className="hide-m hide-l">MAC</th>
                 {th('network', 'Netz')}
-                <th className="hide-m">Anschluss</th>
+                <th>Anschluss</th>
                 {th('down', 'Download', true)}
                 {th('up', 'Upload', true)}
                 {th('today', 'Heute', true)}
@@ -118,7 +118,7 @@ export default function Devices({ full, q }: { full: Full; q?: string }) {
                   <td className="mono">{d.ip || '–'}</td>
                   <td className="mono dim hide-m hide-l">{d.mac}</td>
                   <td>{d.network || '–'}</td>
-                  <td className="hide-m"><AttachCell d={d} /></td>
+                  <td><AttachCell d={d} /></td>
                   <td className="r"><Rate v={d.down} dir="d" /></td>
                   <td className="r"><Rate v={d.up} dir="u" /></td>
                   <td className="r num" title={`↓ ${bytes(d.today_down)} · ↑ ${bytes(d.today_up)}`}>{d.today_down + d.today_up ? bytes(d.today_down + d.today_up) : '–'}</td>

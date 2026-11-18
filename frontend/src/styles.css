@@ -333,6 +333,31 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
   .hide-m { display: none !important; }
 }
 
+/* phone "Mehr" sheet: every page of the sidebar, device search, live state, logout */
+.msheet { display: none; }
+.mnav button { position: relative; }
+.mbadge { position: absolute; top: 2px; left: calc(50% + 6px); min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--bad); color: #fff; font-size: 10px; font-weight: 700; display: grid; place-items: center; line-height: 1; }
+@media (max-width: 720px) {
+  .msheet-scrim { z-index: 44; }
+  .msheet {
+    display: flex; flex-direction: column; gap: 14px; position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
+    max-height: 85vh; overflow-y: auto; background: var(--bg-2); border: 1px solid var(--border); border-bottom: 0;
+    border-radius: 18px 18px 0 0; box-shadow: var(--shadow-lg);
+    padding: 8px 14px calc(16px + env(safe-area-inset-bottom)); animation: sheet .18s cubic-bezier(.2, .8, .2, 1);
+  }
+  .msheet .grab { width: 36px; height: 4px; border-radius: 2px; background: var(--border); align-self: center; flex: none; }
+  .msearch { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); color: var(--text-3); }
+  .msearch:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .msearch input { background: transparent; border: 0; outline: 0; color: var(--text); font: inherit; font-size: 15px; width: 100%; }
+  .mgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .mitem { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 4px 12px; border-radius: 12px; border: 1px solid var(--border-soft); background: var(--surface); color: var(--text-2); font: inherit; font-size: 12px; font-weight: 550; text-align: center; cursor: pointer; }
+  .mitem.active { color: var(--accent-2); border-color: var(--accent); background: var(--accent-soft); }
+  .mitem .mcount { position: absolute; top: 6px; right: 8px; font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .mitem .mbadge { left: auto; right: 6px; top: 6px; }
+  .mfoot { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-2); padding: 2px 2px 0; }
+}
+@keyframes sheet { from { transform: translateY(40px); opacity: 0; } }
+
 .dom-row .hide-btn { width: 26px; height: 26px; opacity: 0; transition: opacity .12s; margin: -4px -6px -4px 0; }
 .dom-row:hover .hide-btn, .hide-btn:focus-visible { opacity: 1; }
 @media (hover: none) { .dom-row .hide-btn { opacity: .6; } }
@@ -365,6 +390,7 @@ input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
 .topo { display: flex; flex-direction: column; align-items: center; padding: 8px 0 30px; overflow-x: auto; }
 .tnode { display: flex; align-items: center; gap: 12px; min-width: 420px; max-width: 760px; width: 100%; padding: 12px 16px; border-radius: 14px; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow); }
 .tnode.wide { max-width: 1100px; flex-wrap: wrap; }
+@media (max-width: 720px) { .tnode { min-width: 0; box-sizing: border-box; } }
 .tic { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-2); flex: none; }
 .tconn { width: 2px; height: 34px; background: var(--surface-3); position: relative; }
 .tconn span { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); white-space: nowrap; font-size: 11.5px; color: var(--text-3); font-family: var(--mono); }
@@ -377,7 +403,14 @@ input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
 .tdev:hover { background: var(--surface-3); }
 .tdev.off { opacity: .55; }
 .tdev .dev-ic { width: 26px; height: 26px; border-radius: 8px; }
-.tpanel { display: flex; gap: 14px; padding: 8px 10px; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--border-soft); }
+/* network map as a picture on narrow screens (components/PanZoom.tsx) */
+.pz { position: relative; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; border-radius: 14px; border: 1px solid var(--border-soft); background: var(--bg); cursor: grab; }
+.pz:active { cursor: grabbing; }
+.pz-in { position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform; padding: 16px 20px; box-sizing: border-box; }
+.pz-in .topo { overflow: visible; }
+.pz-ctl { position: absolute; right: 10px; bottom: 10px; z-index: 2; display: flex; flex-direction: column; gap: 6px; }
+.pz-ctl button { width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); display: grid; place-items: center; box-shadow: var(--shadow); cursor: pointer; }
+.tpanel { display: flex; flex-wrap: wrap; max-width: 100%; box-sizing: border-box; gap: 10px 14px; padding: 8px 10px; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--border-soft); }
 .tport { width: 34px; height: 34px; border-radius: 6px; border: 2px solid var(--border); background: var(--surface-2); color: var(--text-3); display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; cursor: pointer; padding: 0; line-height: 1; }
 .tport i { font-style: normal; font-size: 8.5px; font-weight: 600; margin-top: 2px; }
 .tport.up { background: color-mix(in srgb, currentColor 14%, var(--surface-2)); }

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import {
-  Activity, ArrowLeftRight, BrickWall, Globe, Share2, Stethoscope, Workflow, LayoutDashboard, Settings as SettingsIcon, LogOut, MonitorSmartphone, Network, Search, Server, ShieldCheck, Waypoints, Wifi,
+  Activity, ArrowLeftRight, BrickWall, Globe, Share2, Stethoscope, Workflow, LayoutDashboard, Settings as SettingsIcon, LogOut, Menu, MonitorSmartphone, Network, Search, Server, ShieldCheck, Waypoints, Wifi,
 } from 'lucide-react'
 import { logout, useStore, Full } from './api'
 import { rate } from './format'
@@ -64,6 +64,8 @@ const NAV: [string, string, React.ComponentType<any>][] = [
   ['settings', 'Einstellungen', SettingsIcon],
 ]
 
+const MNAV = 4 // pages directly in the phone bottom bar, the rest is under "Mehr"
+
 export function wanRates(full?: Full) {
   let rx = 0, tx = 0
   for (const i of full?.interfaces || []) if (i.wan) { rx += i.rx; tx += i.tx }
@@ -74,8 +76,9 @@ export default function App() {
   const s = useStore()
   const [route, setRoute] = useState<Route>(parseHash())
   const [q, setQ] = useState('')
+  const [more, setMore] = useState(false)
   useEffect(() => {
-    const f = () => setRoute(parseHash())
+    const f = () => { setRoute(parseHash()); setMore(false) }
     window.addEventListener('hashchange', f)
     return () => window.removeEventListener('hashchange', f)
   }, [])
@@ -154,11 +157,42 @@ export default function App() {
           {body}
         </main>
       </div>
+      {/* phones: the sidebar is hidden, so the bottom bar has the first pages and "Mehr" has everything the sidebar has */}
       <nav className="mnav">
-        {NAV.slice(0, 5).map(([id, label, Ic]) => (
-          <button key={id} className={page === id ? 'active' : ''} onClick={() => go(id)}><Ic size={20} />{label}</button>
+        {NAV.slice(0, MNAV).map(([id, label, Ic]) => (
+          <button key={id} className={page === id && !more ? 'active' : ''} onClick={() => go(id)}><Ic size={20} />{label}</button>
         ))}
+        <button className={more || !NAV.slice(0, MNAV).some((n) => n[0] === page) ? 'active' : ''} onClick={() => setMore(!more)}>
+          <Menu size={20} />Mehr{problems > 0 && <span className="mbadge">{problems}</span>}
+        </button>
       </nav>
+      {more && (
+        <>
+          <div className="scrim msheet-scrim" onClick={() => setMore(false)} />
+          <div className="msheet">
+            <div className="grab" />
+            <form className="msearch" onSubmit={(e) => { e.preventDefault(); setMore(false); go('devices', undefined, q) }}>
+              <Search size={15} />
+              <input placeholder="Gerät, IP oder MAC suchen" value={q} enterKeyHint="search" onChange={(e) => setQ(e.target.value)} />
+            </form>
+            <div className="mgrid">
+              {NAV.map(([id, label, Ic]) => (
+                <button key={id} className={'mitem' + (page === id ? ' active' : '')} onClick={() => { setMore(false); go(id) }}>
+                  <Ic size={20} strokeWidth={1.9} />
+                  <span>{label}</span>
+                  {id === 'devices' && <span className="mcount">{online}</span>}
+                  {id === 'services' && problems > 0 && <span className="mbadge">{problems}</span>}
+                </button>
+              ))}
+            </div>
+            <div className="mfoot">
+              <span className={'dot ' + (s.connected ? 'ok' : 'warn')} />
+              <span className="grow">{s.connected ? 'Live' : 'Verbinde …'} · {s.user}</span>
+              <button className="btn sm" onClick={logout}><LogOut size={14} />Abmelden</button>
+            </div>
+          </div>
+        </>
+      )}
       {drawerMac && <DeviceDrawer mac={drawerMac} full={full} onClose={() => page === 'devices' ? go('devices', undefined, route.q) : closeDevice()} />}
     </div>
   )

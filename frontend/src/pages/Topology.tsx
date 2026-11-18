@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react'
 import { ChevronDown, ChevronUp, Link2, Save } from 'lucide-react'
 import AssignDialog from '../components/Assign'
 import PortDrawer from '../components/PortDrawer'
+import PanZoom, { useMedia } from '../components/PanZoom'
 import { Globe, Network, Router, Server, Wifi } from 'lucide-react'
 import { api, Device, Full, SwPort } from '../api'
 import { openDevice, wanRates } from '../App'
@@ -61,13 +62,17 @@ function PortPanel({ ports, uplink, sel, onSel, known }: { ports: SwPort[]; upli
   return (
     <div className="tpanel">
       {groups.map(([label, list]) => (
-        <div key={label} className="col" style={{ gap: 4 }}><span className="dim" style={{ fontSize: 10.5 }}>{label}</span><div className="row" style={{ gap: 4 }}>{list.map((p) => <Sq key={p.name} p={p} />)}</div></div>
+        <div key={label} className="col" style={{ gap: 4, minWidth: 0 }}><span className="dim" style={{ fontSize: 10.5 }}>{label}</span><div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>{list.map((p) => <Sq key={p.name} p={p} />)}</div></div>
       ))}
     </div>
   )
 }
 
+// narrow screens (phones, the Android app) get the desktop layout as a picture to move and pinch-zoom
+const CANVAS_WIDTH = 1280
+
 export default function Topology({ full }: { full: Full }) {
+  const canvas = useMedia('(max-width: 1100px)')
   const [sel, setSel] = useState<string | null>(null)
   const [portEdit, setPortEdit] = useState<string | null>(null)
   const [assign, setAssign] = useState<Device | null>(null)
@@ -106,7 +111,7 @@ export default function Topology({ full }: { full: Full }) {
   const guessed = new Set([...guesses.values()].map((d) => d.mac))
   const unknown = devs.filter((d) => d.online && !d.attach && d.mac !== sw?.mac && !guessed.has(d.mac))
 
-  return (
+  const map = (
     <div className="topo">
       <div className="tnode">
         <span className="tic"><Globe size={20} /></span>
@@ -163,7 +168,7 @@ export default function Topology({ full }: { full: Full }) {
                 {saving && saving !== '…' && <span className="err" style={{ fontSize: 12 }}>{saving}</span>}
               </div>}
             </div>
-            <div style={{ marginLeft: 'auto' }}><PortPanel ports={sw.ports} uplink={uplink} sel={sel} known={known} onSel={(p) => { setSel(p); setPortEdit(p) }} /></div>
+            <div style={{ marginLeft: 'auto', minWidth: 0, maxWidth: '100%' }}><PortPanel ports={sw.ports} uplink={uplink} sel={sel} known={known} onSel={(p) => { setSel(p); setPortEdit(p) }} /></div>
           </div>
           <div className="tbus" />
           <div className="tcols">
@@ -215,8 +220,6 @@ export default function Topology({ full }: { full: Full }) {
         </>
       ) : <div style={{ marginTop: 16 }}><SrcError src={full.sources.switch} label="Switch" /></div>}
 
-      {portEdit && sw && sw.ports.find((p) => p.name === portEdit) && <PortDrawer port={sw.ports.find((p) => p.name === portEdit)!} full={full} onClose={() => { setPortEdit(null); setSel(null) }} />}
-      {assign && <AssignDialog d={assign} full={full} onClose={() => setAssign(null)} />}
       {(direct.length > 0 || unknown.length > 0) && (
         <div className="tcols" style={{ marginTop: 26, borderTop: 0 }}>
           {direct.length > 0 && (
@@ -235,5 +238,13 @@ export default function Topology({ full }: { full: Full }) {
         </div>
       )}
     </div>
+  )
+
+  return (
+    <>
+      {canvas ? <PanZoom width={CANVAS_WIDTH}>{map}</PanZoom> : map}
+      {portEdit && sw && sw.ports.find((p) => p.name === portEdit) && <PortDrawer port={sw.ports.find((p) => p.name === portEdit)!} full={full} onClose={() => { setPortEdit(null); setSel(null) }} />}
+      {assign && <AssignDialog d={assign} full={full} onClose={() => setAssign(null)} />}
+    </>
   )
 }
