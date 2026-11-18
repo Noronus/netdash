@@ -98,7 +98,15 @@ class MainActivity : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(this) {
             val w = web
-            if (errorView.visibility != View.VISIBLE && w != null && w.canGoBack()) w.goBack() else moveTaskToBack(true)
+            if (w == null || errorView.visibility == View.VISIBLE) {
+                moveTaskToBack(true)
+                return@addCallback
+            }
+            // first let the page close an open dialog or panel, then go back in netdash, then leave the app
+            w.evaluateJavascript("window.__ndBack ? window.__ndBack() : false") { r ->
+                if (r == "true") return@evaluateJavascript
+                if (w.canGoBack()) w.goBack() else moveTaskToBack(true)
+            }
         }
     }
 

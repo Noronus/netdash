@@ -80,6 +80,16 @@
     post({ t: 'theme', top: rgb('var(--bg)'), bottom: rgb(nav ? 'var(--bg-2)' : 'var(--bg)') })
   }
 
+  // ---- back button: close the topmost dialog / side panel / "Mehr" sheet first (they only listen to Escape and clicks)
+  window.__ndBack = () => {
+    const m = document.querySelectorAll('.modal-wrap')
+    if (m.length) { m[m.length - 1].click(); return true }
+    const s = document.querySelectorAll('.scrim')
+    // the device panel lives in the URL (#/devices/<mac>, ?d=<mac>): history back closes it without a new entry
+    if (s.length && !/^#\/devices\/[^?]|[?&]d=/.test(location.hash)) { s[s.length - 1].click(); return true }
+    return false
+  }
+
   // ---- login page: a way back to the server setup
   const loginLink = () => {
     const f = document.querySelector('.login form')
