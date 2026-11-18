@@ -382,6 +382,9 @@ class App:
             if att and att.get("kind") == "firewall" and item.get("wan_side"):
                 att["wan"] = True
             item["attach"] = att
+            # a known switch port (own switch, manual placement or behind the uplink) means a cable, even without UniFi data
+            if item["link"] == "unknown" and att and (att["kind"] == "switch" or att.get("note")):
+                item["link"] = "wired"
             item["blocked"] = mac in blocked
             item["icon_auto"] = icons.guess(item, w, infra.get(mac))
             if item.get("online") and not item.get("connected_since"):

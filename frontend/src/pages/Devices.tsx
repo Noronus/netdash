@@ -35,7 +35,9 @@ export default function Devices({ full, q }: { full: Full; q?: string }) {
   let list = full.devices.filter((d) => {
     if (status === 'online' && !d.online) return false
     if (status === 'offline' && d.online) return false
-    if (link !== 'all' && d.link !== link) return false
+    // LAN = everything that is not WiFi (devices without a known connection are almost always wired)
+    if (link === 'wifi' && d.link !== 'wifi') return false
+    if (link === 'wired' && d.link === 'wifi') return false
     if (netFilter && d.network !== netFilter) return false
     if (query) {
       const hay = [d.name, d.hostname, d.ip, d.mac, d.vendor, ...(d.ipv4 || []), d.network, d.wifi?.essid].join(' ').toLowerCase()
