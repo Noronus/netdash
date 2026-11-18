@@ -177,7 +177,7 @@ export default function DeviceDrawer({ mac, full, onClose }: { mac: string; full
               <dt>IPv4</dt><dd className="mono">{dev.ipv4.length ? dev.ipv4.join(', ') : dev.ip || '–'}</dd>
               {dev.ipv6.length > 0 && <><dt>IPv6</dt><dd className="mono" style={{ fontSize: 11.5 }}>{dev.ipv6.join('\n')}</dd></>}
               <dt>MAC</dt><dd className="mono">{dev.mac}{dev.private_mac ? <span className="dim"> · private/zufällige MAC</span> : null}</dd>
-              <dt>Angeschlossen</dt><dd className="row gap6"><AttachCell d={dev} long />{(!dev.attach || dev.attach.manual) && <button className="btn sm ghost" onClick={() => setAssign(true)}>{dev.attach ? 'ändern' : 'zuweisen'}</button>}</dd>
+              <dt>Angeschlossen</dt><dd className="row gap6"><AttachCell d={dev} long />{dev.attach?.manual && <Badge>fest zugewiesen</Badge>}<button className="btn sm ghost" onClick={() => setAssign(true)}>{dev.place ? 'ändern' : 'fest zuweisen'}</button></dd>
               <dt>Netz</dt><dd>{(dev.networks && dev.networks.length ? dev.networks : [dev.network]).join(', ') || '–'}</dd>
               <dt>Hostname</dt><dd>{dev.hostname || '–'}</dd>
               <dt>DHCP</dt><dd>{dev.dhcp === 'static' ? 'statisches DHCP-Lease (dnsmasq)' : dev.dhcp === 'dynamic' ? `dynamisch, läuft ab ${dateTime(dev.lease_expire)}` : 'kein DHCP, IP ist am Gerät fest eingestellt'}</dd>

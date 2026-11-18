@@ -366,13 +366,15 @@ class App:
             elif item.get("netif") and item["netif"] in self.ifaces.by_dev and not self.ifaces.by_dev[item["netif"]].get("parent") \
                     and item["netif"] not in self.ifaces.children():
                 att = {"kind": "firewall", "iface": item.get("network")}
-            if att is None and item.get("place"):
+            # a fixed assignment wins over "no idea" and over a remembered (stale) port; only a live sighting beats it
+            if item.get("place") and (att is None or att.get("stale")):
                 pl = item["place"]
                 if pl.get("kind") == "switch" and sw:
                     pp = next((x for x in sw["ports"] if x["name"] == pl.get("port")), None)
                     att = {"kind": "switch", "switch": sw.get("name") or "Switch", "port": pl.get("port"),
                            "descr": pp["descr"] if pp else "", "speed": pp["speed"] if pp else None,
-                           "media": pp["media"] if pp else None, "via": None, "via_mac": None, "manual": True}
+                           "media": pp["media"] if pp else None, "via": None, "via_mac": None, "manual": True,
+                           "stale": None if (pp and pp["up"]) else int(item.get("last_seen") or 0) or None}
                 elif pl.get("kind") == "via" and pl.get("via_mac"):
                     host = devs.get(pl["via_mac"])
                     hp = port_of.get(pl["via_mac"])

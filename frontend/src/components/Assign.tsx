@@ -27,7 +27,7 @@ export default function AssignDialog({ d, full, onClose }: { d: Device; full: Fu
     <div className="modal-wrap" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="row"><b className="grow">Anschluss von {d.name} festlegen</b><button className="icon-btn" onClick={onClose}><X size={16} /></button></div>
-        <div className="dim" style={{ fontSize: 12.5 }}>Gilt nur, solange Switch und UniFi das Gerät nicht selbst finden. Automatisch erkannte Anschlüsse haben Vorrang.</div>
+        <div className="dim" style={{ fontSize: 12.5 }}>Gilt immer, auch wenn das Gerät aus ist. Nur wenn der Switch oder UniFi das Gerät gerade live an einem anderen Anschluss sieht, wird dieser angezeigt.</div>
         <label className="check" style={{ alignSelf: 'flex-start', padding: 0 }}><input type="radio" checked={kind === 'switch'} onChange={() => setKind('switch')} />Am Switch-Port</label>
         {kind === 'switch' && (
           <select className="input" value={port} onChange={(e) => setPort(e.target.value)}>

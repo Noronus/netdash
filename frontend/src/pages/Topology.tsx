@@ -194,8 +194,9 @@ export default function Topology({ full }: { full: Full }) {
                     </div>
                   )}
                   <More items={[...here].sort((a, b) => Number(b.online) - Number(a.online)).map((d) => <DevChip key={d.mac} d={d}
-                    hint={d.attach?.stale ? `zuletzt an diesem Port gesehen ${ago(d.attach.stale)}, bleibt hier bis ein anderes Gerät eingesteckt wird` : d.attach?.manual ? 'manuell zugewiesen' : undefined}
-                    sub={d.attach?.stale ? <span>{d.ip} · {d.online ? 'zuletzt gesehen' : 'aus'} {ago(d.attach.stale)}</span> : undefined} />)} />
+                    hint={d.attach?.manual ? 'fest zugewiesen (Geräte-Einstellungen)' : d.attach?.stale ? `zuletzt an diesem Port gesehen ${ago(d.attach.stale)}, bleibt hier bis ein anderes Gerät eingesteckt wird` : undefined}
+                    sub={d.attach?.manual && !d.online ? <span>{d.ip} · aus · fest zugewiesen</span>
+                      : d.attach?.stale ? <span>{d.ip} · {d.online ? 'zuletzt gesehen' : 'aus'} {ago(d.attach.stale)}</span> : undefined} />)} />
                   {!hostDev && !host && !here.length && (() => {
                     const guess = guesses.get(p.name)
                     return guess ? <><DevChip d={guess} hint={`laut Port-Name „${p.descr}“ (gerade keine MAC am Port)`} sub={<span>{guess.ip} · laut Port-Name</span>} /></> : <div className="dim" style={{ fontSize: 12 }}>Gerät unbekannt (MAC nicht zugeordnet)</div>
