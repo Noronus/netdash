@@ -39,7 +39,7 @@ function More({ items, n = 3 }: { items: React.ReactNode[]; n?: number }) {
   )
 }
 
-function PortPanel({ ports, uplink, sel, onSel }: { ports: SwPort[]; uplink?: string; sel: string | null; onSel: (p: string) => void }) {
+function PortPanel({ ports, uplink, sel, onSel, known }: { ports: SwPort[]; uplink?: string; sel: string | null; onSel: (p: string) => void; known: Map<string, string> }) {
   const groups: [string, SwPort[]][] = []
   const add = (label: string, list: SwPort[]) => { if (list.length) groups.push([label, list]) }
   const maxOf = (l: SwPort[]) => speedLabel(Math.max(...l.map((p) => (p.name.startsWith('MGE') ? 2500 : 10000))))
@@ -50,12 +50,12 @@ function PortPanel({ ports, uplink, sel, onSel }: { ports: SwPort[]; uplink?: st
   add('10G RJ45', rj)
   add('10G SFP+', sfp)
   const Sq = ({ p }: { p: SwPort }) => (
-    <button className={'tport' + (p.form === 'sfp' ? ' sfp' : '') + (p.up ? ' up' : '') + (sel === p.name ? ' sel' : '') + (p.name === uplink ? ' uplink' : '')}
+    <button className={'tport' + (p.form === 'sfp' ? ' sfp' : '') + (p.up ? ' up' : known.has(p.name) ? ' known' : '') + (sel === p.name ? ' sel' : '') + (p.name === uplink ? ' uplink' : '')}
       style={p.up ? { borderColor: speedColor(p.speed), color: speedColor(p.speed) } : undefined}
-      title={`${p.name} (${p.form === 'sfp' ? 'SFP+' : 'RJ45'})${p.descr ? ' · ' + p.descr : ''} · ${p.up ? speedLabel(p.speed) : 'kein Link'}${p.name === uplink ? ' · Uplink zur OPNsense' : ''}`}
+      title={`${p.name} (${p.form === 'sfp' ? 'SFP+' : 'RJ45'})${p.descr ? ' · ' + p.descr : ''} · ${p.up ? speedLabel(p.speed) : known.has(p.name) ? 'belegt, Gerät aus: ' + known.get(p.name) : 'frei'}${p.name === uplink ? ' · Uplink zur OPNsense' : ''}`}
       onClick={() => onSel(p.name)}>
       <span>{p.name.replace(/^MGE|^TE/, '')}</span>
-      <i>{p.up ? speedLabel(p.speed) : ''}</i>
+      <i>{p.up ? speedLabel(p.speed) : known.has(p.name) ? 'aus' : ''}</i>
     </button>
   )
   return (
@@ -83,6 +83,13 @@ export default function Topology({ full }: { full: Full }) {
   const apMacs = new Set((full.unifi_devices || []).filter((d) => d.type === 'uap').map((d) => d.mac))
   // ports with a link, plus ports where a device that is off now was last seen (kept until another device is plugged in)
   const cols = (sw?.ports || []).filter((p) => p.name !== uplink && (p.up || devs.some((d) => d.attach?.kind === 'switch' && d.attach.port === p.name)))
+  // ports without link that still have a device (fixed or last seen): port -> device names
+  const known = new Map<string, string>()
+  for (const p of sw?.ports || []) {
+    if (p.up) continue
+    const names = devs.filter((d) => d.attach?.kind === 'switch' && d.attach.port === p.name && !d.attach.via).map((d) => d.name)
+    if (names.length) known.set(p.name, names.join(', '))
+  }
   const attached = new Set(devs.filter((d) => d.attach).map((d) => d.mac))
   const wanSide = devs.filter((d) => d.attach?.kind === 'firewall' && d.attach.wan)
   const gwIps = new Set((full.gateways || []).map((g) => g.address))
@@ -156,7 +163,7 @@ export default function Topology({ full }: { full: Full }) {
                 {saving && saving !== '…' && <span className="err" style={{ fontSize: 12 }}>{saving}</span>}
               </div>}
             </div>
-            <div style={{ marginLeft: 'auto' }}><PortPanel ports={sw.ports} uplink={uplink} sel={sel} onSel={(p) => { setSel(p); setPortEdit(p) }} /></div>
+            <div style={{ marginLeft: 'auto' }}><PortPanel ports={sw.ports} uplink={uplink} sel={sel} known={known} onSel={(p) => { setSel(p); setPortEdit(p) }} /></div>
           </div>
           <div className="tbus" />
           <div className="tcols">
@@ -169,11 +176,11 @@ export default function Topology({ full }: { full: Full }) {
               const wifi = isAp ? devs.filter((d) => d.attach?.kind === 'wifi' && d.attach.ap_mac === host!.mac) : []
               const ssids = [...new Set(wifi.map((d) => d.attach?.ssid || '?'))]
               return (
-                <div key={p.name} id={'tp-' + p.name} className={'tcol' + (sel === p.name ? ' sel' : '')}>
+                <div key={p.name} id={'tp-' + p.name} className={'tcol' + (sel === p.name ? ' sel' : '') + (!p.up ? ' off' : '')}>
                   <div className="row gap6" style={{ marginBottom: 8, cursor: 'pointer' }} onClick={() => setPortEdit(p.name)} title="Port-Einstellungen">
                     <b>{p.name}</b>
                     {p.up ? <span className="badge" style={{ color: speedColor(p.speed) }}>{speedLabel(p.speed)} {p.form === 'sfp' ? 'SFP+' : 'RJ45'}</span>
-                      : <span className="badge" title="Port ohne Link, zuletzt gesehenes Gerät">kein Link · {p.form === 'sfp' ? 'SFP+' : 'RJ45'}</span>}
+                      : <span className="badge" title="Port ohne Link, das Gerät ist aus">Gerät aus · {p.form === 'sfp' ? 'SFP+' : 'RJ45'}</span>}
                     <span className="dim ell" style={{ fontSize: 12 }}>{p.descr}</span>
                   </div>
                   {hostDev && <DevChip d={hostDev} hint={isAp ? `Access Point · ${wifi.length} Clients` : behind.length ? behind.length + ' Geräte dahinter' : undefined}

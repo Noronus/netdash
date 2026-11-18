@@ -393,6 +393,9 @@ input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
 .tmini.off { opacity: .55; }
 .tmini .dev-ic { width: 18px; height: 18px; border-radius: 6px; }
 .tport.sfp { border-radius: 2px; height: 30px; width: 38px; border-style: solid; background-image: linear-gradient(to bottom, transparent 70%, color-mix(in srgb, currentColor 25%, transparent) 70%); }
+/* port without link but with a known device (fixed or last seen): not free */
+.tport.known, .tport.sfp.known { border-style: dashed; border-color: var(--text-2); color: var(--text-2); background: repeating-linear-gradient(135deg, var(--surface-2) 0 4px, color-mix(in srgb, var(--text-2) 12%, var(--surface-2)) 4px 8px); }
+.tcol.off { border-style: dashed; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .console { margin: 0; min-height: 320px; max-height: 60vh; overflow: auto; padding: 12px 14px; border-radius: 12px; background: #07090d; color: #cfe3d0; border: 1px solid var(--border); font-family: var(--mono); font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
