@@ -1,0 +1,564 @@
+#!/usr/bin/env python3
+"""netdash-vps: helper on a Linux VPS (public IP) for the netdash dashboard on the OPNsense:
+port forwards into the home network, WireGuard road-warrior tunnels, interface counters.
+Installed as /usr/local/sbin/netdash-vps, called through an SSH key restricted to it (see README.md).
+
+Settings: /etc/netdash-vps/config.json (all optional, see config.example.json).
+The forwards live in <dir>/forwards.json and are applied to the own nat chain NETDASH-PF
+(jumped from PREROUTING for the public address), so changes never touch Docker/WireGuard/VPN rules.
+
+Commands (from the dashboard via an SSH key restricted to this program, or by hand):
+  status            JSON: forwards with counters, other nat rules (read only), listeners
+  apply             JSON list of forwards on stdin; applied now, rolled back after 60 s unless confirmed
+  confirm           keep the applied forwards
+  rollback          go back to the last confirmed forwards
+  boot              apply the confirmed forwards (netdash-vps.service at boot)
+  test HOST PORT    TCP connect test from the VPS (through the tunnel)
+  wg                JSON: WireGuard tunnels from /etc/wireguard/*.conf with live peer state
+  wg-up NAME / wg-down NAME / wg-autostart NAME on|off
+  wg-create NAME home|all adguard|none   new tunnel wg-NAME, prints the client config (JSON)
+  wg-config NAME    client config of a tunnel created here
+  wg-delete NAME    remove a tunnel created here (config moved to /etc/wireguard/archiv)
+  ifaces            network interfaces with addresses and byte counters (JSON, read only)
+"""
+import ipaddress
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+
+CONFIG_FILE = os.environ.get("NETDASH_VPS_CONFIG", "/etc/netdash-vps/config.json")
+DEFAULTS = {
+    "wan_ip": "",                 # public address; empty = source address of the default route
+    "dir": "/etc/netdash-vps",    # forwards.json lives here
+    "home_nets": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],  # allowed forward targets
+    "wg_net": "10.99.0.0/24",     # new WireGuard tunnels get the next free /30 from here
+    "wg_first": "",               # first address to use inside wg_net (skip blocks used by hand)
+    "wg_ports": "51820-51899",    # UDP ports for new tunnels
+    "home_routes": "",            # AllowedIPs for "home only" clients, e.g. "192.168.1.0/24"; empty = home_nets
+    "dns": "",                    # DNS server pushed to clients (e.g. your home resolver); empty = none
+    "name": "VPS",                # shown in client configs
+}
+
+
+def _config():
+    c = dict(DEFAULTS)
+    try:
+        with open(CONFIG_FILE) as f:
+            c.update(json.load(f))
+    except FileNotFoundError:
+        pass
+    return c
+
+
+CFG = _config()
+
+
+def _wan_ip():
+    if CFG["wan_ip"]:
+        return CFG["wan_ip"]
+    try:
+        r = json.loads(subprocess.run(["ip", "-j", "route", "get", "1.1.1.1"], capture_output=True, text=True).stdout)
+        return r[0]["prefsrc"]
+    except Exception:
+        return ""
+
+
+WAN_IP = _wan_ip()
+DIR = CFG["dir"]
+CONF = os.path.join(DIR, "forwards.json")
+PENDING = os.path.join(DIR, "forwards.pending.json")
+CHAIN = "NETDASH-PF"
+TIMER = "netdash-vps-rollback"
+DEADMAN = 60
+HOME_NETS = [ipaddress.ip_network(n) for n in CFG["home_nets"]]
+
+
+def sh(*cmd, check=True, inp=None):
+    p = subprocess.run(cmd, capture_output=True, text=True, input=inp)
+    if check and p.returncode != 0:
+        raise RuntimeError("%s: %s" % (" ".join(cmd), (p.stderr or p.stdout).strip()))
+    return p.stdout
+
+
+def ipt(*args, check=True):
+    return sh("iptables", "-w", "5", *args, check=check)
+
+
+def load(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+
+
+def save(path, data):
+    os.makedirs(DIR, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=1, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def listeners():
+    out = set()
+    for line in sh("ss", "-tlnuH", check=False).splitlines():
+        p = line.split()
+        if len(p) >= 5:
+            local = p[4]
+            addr, _, port = local.rpartition(":")
+            if port.isdigit() and not addr.startswith(("127.", "[::1]")) and "%lo" not in addr:
+                out.add((p[0], int(port)))
+    return out
+
+
+def validate(fwds):
+    if not isinstance(fwds, list) or len(fwds) > 200:
+        raise ValueError("Liste erwartet")
+    used = listeners()
+    seen = set()
+    clean = []
+    for f in fwds:
+        proto = str(f.get("proto", "tcp")).lower()
+        if proto not in ("tcp", "udp"):
+            raise ValueError("Protokoll tcp oder udp")
+        port = int(f.get("port"))
+        to_port = int(f.get("to_port") or port)
+        if not (1 <= port <= 65535 and 1 <= to_port <= 65535):
+            raise ValueError("Port außerhalb 1-65535")
+        to_ip = str(f.get("to_ip", "")).strip()
+        ip = ipaddress.ip_address(to_ip)
+        if not any(ip in n for n in HOME_NETS):
+            raise ValueError("Ziel %s ist keine private Adresse" % to_ip)
+        enabled = bool(f.get("enabled", True))
+        if enabled and (proto, port) in used:
+            raise ValueError("%s/%d nutzt der VPS selbst (z. B. SSH, Proxy, NetBird), kann nicht weitergeleitet werden" % (proto, port))
+        if enabled and (proto, port) in seen:
+            raise ValueError("%s/%d ist doppelt" % (proto, port))
+        seen.add((proto, port))
+        comment = re.sub(r"[^\w .,:()/+@äöüÄÖÜß-]", "", str(f.get("comment", "")))[:60]
+        clean.append({"proto": proto, "port": port, "to_ip": to_ip, "to_port": to_port, "comment": comment,
+                      "enabled": enabled})
+    return clean
+
+
+def ensure_chain():
+    if ipt("-t", "nat", "-S", CHAIN, check=False) == "":
+        ipt("-t", "nat", "-N", CHAIN, check=False)
+    jump = ["PREROUTING", "-d", WAN_IP, "-j", CHAIN]
+    if subprocess.run(["iptables", "-w", "5", "-t", "nat", "-C", *jump], capture_output=True).returncode != 0:
+        ipt("-t", "nat", "-I", *jump[:1], "1", *jump[1:])
+
+
+def apply_rules(fwds):
+    ensure_chain()
+    lines = ["*nat", ":%s - [0:0]" % CHAIN]
+    for f in fwds:
+        if not f["enabled"]:
+            continue
+        c = (" -m comment --comment %s" % json.dumps("netdash: " + f["comment"])) if f["comment"] else ""
+        lines.append("-A %s -p %s -m %s --dport %d%s -j DNAT --to-destination %s:%d"
+                     % (CHAIN, f["proto"], f["proto"], f["port"], c, f["to_ip"], f["to_port"]))
+    lines.append("COMMIT")
+    # --noflush: only NETDASH-PF is replaced, every other chain stays as it is
+    sh("iptables-restore", "-w", "5", "--noflush", inp="\n".join(lines) + "\n")
+
+
+def counters():
+    out = {}
+    for line in ipt("-t", "nat", "-L", CHAIN, "-v", "-x", "-n", check=False).splitlines()[2:]:
+        p = line.split()
+        if len(p) < 9:
+            continue
+        m = re.search(r"dpt:(\d+)", line)
+        if m:
+            proto = {"6": "tcp", "17": "udp"}.get(p[3], p[3])
+            out[(proto, int(m.group(1)))] = {"packets": int(p[0]), "bytes": int(p[1])}
+    return out
+
+
+def cmd_status():
+    fwds = load(PENDING) if os.path.exists(PENDING) else load(CONF)
+    cnt = counters()
+    for f in fwds:
+        c = cnt.get((f["proto"], f["port"]), {})
+        f["packets"], f["bytes"] = c.get("packets"), c.get("bytes")
+    other = []
+    for line in ipt("-t", "nat", "-S", "PREROUTING", check=False).splitlines():
+        if "DNAT" in line and CHAIN not in line:
+            other.append(line)
+    timer = subprocess.run(["systemctl", "is-active", TIMER + ".timer"], capture_output=True, text=True).stdout.strip()
+    print(json.dumps({
+        "wan_ip": WAN_IP, "forwards_file": CONF, "forwards": fwds, "pending": os.path.exists(PENDING), "timer": timer,
+        "other_dnat": other, "listeners": sorted("%s/%d" % x for x in listeners()),
+        "time": int(time.time()),
+    }))
+
+
+def cmd_apply():
+    fwds = validate(json.loads(sys.stdin.read() or "[]"))
+    save(PENDING, fwds)
+    apply_rules(fwds)
+    subprocess.run(["systemctl", "stop", TIMER + ".timer"], capture_output=True)
+    sh("systemd-run", "--unit", TIMER, "--on-active=%ds" % DEADMAN, "--timer-property=AccuracySec=1s",
+       "/usr/local/sbin/netdash-vps", "rollback", check=False)
+    print(json.dumps({"ok": True, "deadman": DEADMAN}))
+
+
+def cmd_confirm():
+    if os.path.exists(PENDING):
+        os.replace(PENDING, CONF)
+    subprocess.run(["systemctl", "stop", TIMER + ".timer"], capture_output=True)
+    print(json.dumps({"ok": True}))
+
+
+def cmd_rollback():
+    if os.path.exists(PENDING):
+        os.remove(PENDING)
+    apply_rules(load(CONF))
+    subprocess.run(["systemctl", "stop", TIMER + ".timer"], capture_output=True)
+    print(json.dumps({"ok": True}))
+
+
+def cmd_boot():
+    if os.path.exists(PENDING):
+        os.remove(PENDING)
+    apply_rules(load(CONF))
+
+
+def cmd_test(host, port):
+    ipaddress.ip_address(host)
+    t0 = time.time()
+    try:
+        with socket.create_connection((host, int(port)), timeout=4):
+            print(json.dumps({"ok": True, "ms": round((time.time() - t0) * 1000)}))
+    except OSError as e:
+        print(json.dumps({"ok": False, "error": str(e)}))
+
+
+WG_DIR = "/etc/wireguard"
+WG_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,14}$")
+
+
+def wg_confs():
+    out = {}
+    for fn in sorted(os.listdir(WG_DIR)):
+        if not fn.endswith(".conf"):
+            continue
+        name = fn[:-5]
+        if not WG_NAME.match(name):
+            continue
+        iface, peers, cur, comment = {}, [], None, ""
+        for raw in open(os.path.join(WG_DIR, fn)):
+            line = raw.strip()
+            if line.startswith("#"):
+                comment = line.lstrip("# ").strip()
+                continue
+            if line == "[Interface]":
+                cur = iface
+                continue
+            if line == "[Peer]":
+                cur = {"comment": comment}
+                peers.append(cur)
+                comment = ""
+                continue
+            if "=" in line and cur is not None:
+                k, _, v = line.partition("=")
+                k = k.strip()
+                if k in ("PrivateKey", "PresharedKey", "PostUp", "PostDown", "PreUp", "PreDown"):
+                    if k.startswith(("Post", "Pre")):
+                        cur["hooks"] = cur.get("hooks", 0) + 1
+                    continue
+                cur[k] = v.strip()
+        out[name] = {"iface": iface, "peers": peers}
+    return out
+
+
+def wg_runtime():
+    rt = {}
+    for line in sh("wg", "show", "all", "dump", check=False).splitlines():
+        f = line.split("\t")
+        if len(f) == 5:
+            rt.setdefault(f[0], {"listen": f[3], "pub": f[2], "peers": {}})
+        elif len(f) == 9:
+            rt.setdefault(f[0], {"peers": {}})["peers"][f[1]] = {
+                "endpoint": None if f[3] == "(none)" else f[3], "allowed": f[4],
+                "handshake": int(f[5]) or None, "rx": int(f[6]), "tx": int(f[7]),
+                "keepalive": None if f[8] == "off" else f[8]}
+    return rt
+
+
+def systemd_state(name):
+    en = subprocess.run(["systemctl", "is-enabled", "wg-quick@" + name], capture_output=True, text=True).stdout.strip()
+    return en == "enabled"
+
+
+def cmd_wg():
+    confs, rt = wg_confs(), wg_runtime()
+    out = []
+    for name, c in confs.items():
+        r = rt.get(name)
+        peers = []
+        for p in c["peers"]:
+            live = (r or {}).get("peers", {}).get(p.get("PublicKey", ""), {})
+            peers.append({"pub": p.get("PublicKey"), "comment": p.get("comment"), "allowed": p.get("AllowedIPs"),
+                          "endpoint": live.get("endpoint") or p.get("Endpoint"), "keepalive": p.get("PersistentKeepalive"),
+                          "handshake": live.get("handshake"), "rx": live.get("rx"), "tx": live.get("tx")})
+        out.append({"name": name, "active": r is not None, "autostart": systemd_state(name), "created": _created_here(name),
+                    "has_client": os.path.exists(os.path.join(CLIENT_DIR, name + ".conf")),
+                    "address": c["iface"].get("Address"), "port": c["iface"].get("ListenPort"),
+                    "pub": (r or {}).get("pub"), "hooks": c["iface"].get("hooks", 0), "peers": peers})
+    print(json.dumps({"tunnels": out, "time": int(time.time()),
+                      "defaults": {"home_routes": HOME_ROUTES, "dns": CFG["dns"], "tun_net": str(TUN_NET),
+                                   "ports": "%d-%d" % (PORTS.start, PORTS.stop - 1)}}))
+
+
+def _wg_check(name):
+    if not WG_NAME.match(name or "") or not os.path.exists(os.path.join(WG_DIR, name + ".conf")):
+        raise ValueError("Tunnel %s gibt es nicht" % name)
+
+
+def cmd_wg_up(name):
+    _wg_check(name)
+    confs, rt = wg_confs(), wg_runtime()
+    me = confs[name]["iface"]
+    for other, c in confs.items():
+        if other == name or other not in rt:
+            continue
+        if me.get("ListenPort") and me.get("ListenPort") == c["iface"].get("ListenPort"):
+            raise ValueError("Port %s nutzt schon der aktive Tunnel %s" % (me["ListenPort"], other))
+        if me.get("Address") and me.get("Address") == c["iface"].get("Address"):
+            raise ValueError("Adresse %s nutzt schon der aktive Tunnel %s" % (me["Address"], other))
+    sh("systemctl", "start", "wg-quick@" + name)
+    print(json.dumps({"ok": True}))
+
+
+def cmd_wg_down(name):
+    _wg_check(name)
+    sh("systemctl", "stop", "wg-quick@" + name)
+    # tunnels brought up by hand (wg-quick up) are not stopped by systemd
+    if wg_runtime().get(name):
+        sh("wg-quick", "down", name)
+    print(json.dumps({"ok": True}))
+
+
+def cmd_wg_autostart(name, on):
+    _wg_check(name)
+    sh("systemctl", "enable" if on == "on" else "disable", "wg-quick@" + name)
+    print(json.dumps({"ok": True}))
+
+
+CLIENT_DIR = os.path.join(WG_DIR, "netdash-clients")
+MARK = "# netdash:"
+TUN_NET = ipaddress.ip_network(CFG["wg_net"])
+_p = [int(x) for x in str(CFG["wg_ports"]).split("-")]
+PORTS = range(_p[0], (_p[1] if len(_p) > 1 else _p[0]) + 1)
+HOME_ROUTES = CFG["home_routes"] or ", ".join(CFG["home_nets"])
+TUN_FIRST = ipaddress.ip_address(CFG["wg_first"]) if CFG["wg_first"] else TUN_NET.network_address
+
+
+def _created_here(name):
+    try:
+        return open(os.path.join(WG_DIR, name + ".conf")).readline().startswith(MARK)
+    except OSError:
+        return False
+
+
+def _used_space():
+    nets, ports = [], set()
+    for fn in os.listdir(WG_DIR):
+        if not fn.endswith(".conf"):
+            continue
+        for raw in open(os.path.join(WG_DIR, fn)):
+            k, _, v = raw.partition("=")
+            k = k.strip()
+            if k in ("Address", "AllowedIPs"):
+                for part in v.split(","):
+                    try:
+                        n = ipaddress.ip_interface(part.strip()).network
+                    except ValueError:
+                        continue
+                    if n.version == 4 and n.overlaps(TUN_NET):
+                        nets.append(n)
+            elif k == "ListenPort" and v.strip().isdigit():
+                ports.add(int(v.strip()))
+    ports |= {p for proto, p in listeners() if proto == "udp"}
+    return nets, ports
+
+
+def cmd_wg_create(name, route, dns):
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,11}", name or ""):
+        raise ValueError("Name: a-z, 0-9 und -, höchstens 12 Zeichen")
+    iface = "wg-" + name
+    if os.path.exists(os.path.join(WG_DIR, iface + ".conf")):
+        raise ValueError("Tunnel %s gibt es schon" % iface)
+    nets, ports = _used_space()
+    block = next((b for b in TUN_NET.subnets(new_prefix=30)
+                  if int(b.network_address) >= int(TUN_FIRST) and not any(b.overlaps(n) for n in nets)), None)
+    port = next((p for p in PORTS if p not in ports), None)
+    if not block or not port:
+        raise ValueError("Kein freies Netz oder kein freier Port mehr")
+    hosts = list(block.hosts())
+    srv_ip, cli_ip = hosts[0], hosts[1]
+    gen = lambda: sh("wg", "genkey").strip()
+    pub = lambda k: sh("wg", "pubkey", inp=k + "\n").strip()
+    srv_priv, cli_priv, psk = gen(), gen(), sh("wg", "genpsk").strip()
+    srv_pub, cli_pub = pub(srv_priv), pub(cli_priv)
+    stamp = time.strftime("%Y-%m-%d %H:%M")
+    server = "\n".join([
+        "%s erstellt %s vom Netzwerk-Dashboard (%s)" % (MARK, stamp, name),
+        "[Interface]",
+        "Address = %s/30" % srv_ip,
+        "ListenPort = %d" % port,
+        "PrivateKey = %s" % srv_priv,
+        "PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+        "PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+        "",
+        "# %s" % name,
+        "[Peer]",
+        "PublicKey = %s" % cli_pub,
+        "PresharedKey = %s" % psk,
+        "AllowedIPs = %s/32" % cli_ip,
+        ""])
+    allowed = "0.0.0.0/0, ::/0" if route == "all" else "%s, %s" % (HOME_ROUTES, TUN_NET)
+    client = "\n".join([
+        "# WireGuard %s · %s · erstellt %s" % (name, CFG["name"], stamp),
+        "[Interface]",
+        "PrivateKey = %s" % cli_priv,
+        "Address = %s/32" % cli_ip,
+        *(["DNS = %s" % CFG["dns"]] if dns == "adguard" and CFG["dns"] else []),
+        "",
+        "[Peer]",
+        "PublicKey = %s" % srv_pub,
+        "PresharedKey = %s" % psk,
+        "Endpoint = %s:%d" % (WAN_IP, port),
+        "AllowedIPs = %s" % allowed,
+        "PersistentKeepalive = 25",
+        ""])
+    old = os.umask(0o077)
+    try:
+        os.makedirs(CLIENT_DIR, exist_ok=True)
+        with open(os.path.join(WG_DIR, iface + ".conf"), "w") as f:
+            f.write(server)
+        with open(os.path.join(CLIENT_DIR, iface + ".conf"), "w") as f:
+            f.write(client)
+    finally:
+        os.umask(old)
+    sh("systemctl", "enable", "--now", "wg-quick@" + iface)
+    print(json.dumps({"ok": True, "name": iface, "port": port, "address": str(cli_ip), "config": client}))
+
+
+def cmd_wg_config(name):
+    _wg_check(name)
+    path = os.path.join(CLIENT_DIR, name + ".conf")
+    if not os.path.exists(path):
+        raise ValueError("Für %s gibt es keine gespeicherte Client-Konfiguration (nicht vom Dashboard angelegt)" % name)
+    print(json.dumps({"ok": True, "name": name, "config": open(path).read()}))
+
+
+def cmd_wg_delete(name):
+    _wg_check(name)
+    if not _created_here(name):
+        raise ValueError("%s wurde nicht vom Dashboard angelegt und wird hier nicht gelöscht" % name)
+    subprocess.run(["systemctl", "disable", "--now", "wg-quick@" + name], capture_output=True)
+    if wg_runtime().get(name):
+        sh("wg-quick", "down", name, check=False)
+    arch = os.path.join(WG_DIR, "archiv")
+    os.makedirs(arch, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    os.replace(os.path.join(WG_DIR, name + ".conf"), os.path.join(arch, "%s.conf.%s" % (name, stamp)))
+    cpath = os.path.join(CLIENT_DIR, name + ".conf")
+    if os.path.exists(cpath):
+        os.replace(cpath, os.path.join(arch, "%s.client.conf.%s" % (name, stamp)))
+    print(json.dumps({"ok": True}))
+
+
+def cmd_ifaces():
+    links = json.loads(sh("ip", "-j", "-s", "addr", "show"))
+    nets = {}
+    try:
+        for ln in sh("docker", "network", "ls", "--no-trunc", "--format", "{{.ID}}\t{{.Name}}", check=False).splitlines():
+            nid, _, nname = ln.partition("\t")
+            nets["br-" + nid[:12]] = nname
+        nets["docker0"] = "bridge"
+    except Exception:
+        pass
+    out = []
+    for x in links:
+        n = x.get("ifname", "")
+        if n.startswith("veth"):
+            continue
+        if n == "lo":
+            kind, label = "loopback", "Loopback"
+        elif n.startswith("wt"):
+            kind, label = "netbird", "NetBird"
+        elif n.startswith("wg"):
+            kind, label = "wireguard", "WireGuard " + (n[3:] if n.startswith("wg-") else n)
+        elif n.startswith("br-") or n == "docker0":
+            kind, label = "docker", "Docker · " + nets.get(n, n)
+        elif x.get("link_type") == "ether":
+            kind, label = "public", "Internet (öffentlich)"
+        else:
+            kind, label = "other", n
+        st = x.get("stats64") or {}
+        out.append({"name": n, "kind": kind, "label": label, "state": x.get("operstate"), "mtu": x.get("mtu"),
+                    "addrs": ["%s/%s" % (a["local"], a["prefixlen"]) for a in x.get("addr_info", [])
+                              if not a["local"].startswith("fe80")],
+                    "rx": st.get("rx", {}).get("bytes", 0), "tx": st.get("tx", {}).get("bytes", 0),
+                    "rx_drop": st.get("rx", {}).get("dropped", 0), "tx_drop": st.get("tx", {}).get("dropped", 0)})
+    print(json.dumps({"t": time.time(), "ifaces": out}))
+
+
+def main(argv):
+    os.environ["TZ"] = "Europe/Berlin"
+    time.tzset()
+    if argv and argv[0] == "--ssh":
+        argv = (os.environ.get("SSH_ORIGINAL_COMMAND") or "").split()
+    if not argv:
+        print(__doc__)
+        return 1
+    c, rest = argv[0], argv[1:]
+    try:
+        if c == "status":
+            cmd_status()
+        elif c == "apply":
+            cmd_apply()
+        elif c == "confirm":
+            cmd_confirm()
+        elif c == "rollback":
+            cmd_rollback()
+        elif c == "boot":
+            cmd_boot()
+        elif c == "test" and len(rest) == 2:
+            cmd_test(*rest)
+        elif c == "ifaces":
+            cmd_ifaces()
+        elif c == "wg":
+            cmd_wg()
+        elif c == "wg-up" and len(rest) == 1:
+            cmd_wg_up(rest[0])
+        elif c == "wg-down" and len(rest) == 1:
+            cmd_wg_down(rest[0])
+        elif c == "wg-autostart" and len(rest) == 2 and rest[1] in ("on", "off"):
+            cmd_wg_autostart(*rest)
+        elif c == "wg-create" and len(rest) == 3 and rest[1] in ("home", "all") and rest[2] in ("adguard", "none"):
+            cmd_wg_create(*rest)
+        elif c == "wg-config" and len(rest) == 1:
+            cmd_wg_config(rest[0])
+        elif c == "wg-delete" and len(rest) == 1:
+            cmd_wg_delete(rest[0])
+        else:
+            print(json.dumps({"error": "unknown command"}))
+            return 2
+    except (ValueError, RuntimeError) as e:
+        print(json.dumps({"error": str(e)}))
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

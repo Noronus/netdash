@@ -1,0 +1,6 @@
+{
+  "listen": "lan",
+  "port": 8098,
+  "tls": true,
+  "url": ""
+}

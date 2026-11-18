@@ -1,0 +1,84 @@
+name: Release
+
+# Builds os-netdash + os-netdash-repo in a FreeBSD VM (same major version as OPNsense 26.x),
+# signs the pkg repository and publishes it on GitHub Pages: https://noronus.github.io/netdash/repo
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm ci && npm run build
+
+      - name: Version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"
+          else v="$(sed -n 's/^VERSION = "\(.*\)"/\1/p' backend/main.py)"; fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+
+      - name: Build packages (FreeBSD 15.1 VM)
+        uses: vmactions/freebsd-vm@v1
+        env:
+          PKG_SIGNING_KEY: ${{ secrets.PKG_SIGNING_KEY }}
+        with:
+          release: "15.1"
+          usesh: true
+          envs: "PKG_SIGNING_KEY VERSION"
+          prepare: |
+            pkg -N >/dev/null 2>&1 || env ASSUME_ALWAYS_YES=yes pkg bootstrap -f
+          run: |
+            umask 077
+            KEY=""
+            if [ -n "$PKG_SIGNING_KEY" ]; then printf '%s\n' "$PKG_SIGNING_KEY" > /tmp/signing.pem; KEY=/tmp/signing.pem; fi
+            sh tools/build-pkg.sh "$VERSION" out $KEY
+            rm -f /tmp/signing.pem
+            chmod -R a+rX out
+
+      - name: Assemble site
+        run: |
+          mkdir site
+          cp -R out/repo site/repo
+          cp out/os-netdash-repo.pkg site/
+          cp tools/site/index.html site/
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+      - name: GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" out/repo/All/*.pkg --title "netdash $VERSION" --generate-notes --verify-tag
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

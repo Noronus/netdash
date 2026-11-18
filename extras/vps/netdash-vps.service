@@ -1,0 +1,12 @@
+[Unit]
+Description=netdash-vps: restore the port forwards managed by netdash
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/netdash-vps boot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,66 @@
+#!/bin/sh
+#
+# netdash: network dashboard for OPNsense (https://github.com/Noronus/netdash), supervised by daemon(8).
+# Enabled in /etc/rc.conf.d/netdash, started at boot by rc.freebsd,
+# controlled by configd (actions_netdash.conf) and listed via plugins.inc.d/netdash.inc.
+#
+# PROVIDE: netdash
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="netdash"
+rcvar=netdash_enable
+
+load_rc_config $name
+: ${netdash_enable:="NO"}
+
+pidfile="/var/run/netdash.pid"
+supervisor="/var/run/netdash-daemon.pid"
+start_cmd="netdash_start"
+stop_cmd="netdash_stop"
+status_cmd="netdash_status"
+
+netdash_start()
+{
+	mkdir -p /var/log/netdash /usr/local/netdash/data
+	if pgrep -qF $supervisor 2>/dev/null; then
+		echo "${name} is already running."
+		return 0
+	fi
+	echo "Starting ${name}."
+	# -r: restart after a crash (5 s), -P: supervisor pid, -p: python pid
+	/usr/sbin/daemon -f -r -R 5 -t netdash -P $supervisor -p $pidfile -o /var/log/netdash/netdash.log \
+		/usr/local/bin/python3 -s -E /usr/local/netdash/app/main.py </dev/null >/dev/null 2>&1
+}
+
+netdash_stop()
+{
+	_pid=$(cat $pidfile 2>/dev/null)
+	if pgrep -qF $supervisor 2>/dev/null; then
+		echo "Stopping ${name}."
+		pkill -F $supervisor
+	elif [ -n "$_pid" ]; then
+		kill $_pid 2>/dev/null
+	fi
+	# wait up to 10 s for the python process to exit
+	_i=0
+	while [ -n "$_pid" ] && kill -0 $_pid 2>/dev/null && [ $_i -lt 20 ]; do
+		sleep 0.5
+		_i=$((_i + 1))
+	done
+	rm -f $supervisor $pidfile
+}
+
+netdash_status()
+{
+	if pgrep -qF $pidfile 2>/dev/null; then
+		echo "${name} is running as pid $(cat $pidfile)."
+	else
+		echo "${name} is not running."
+		return 1
+	fi
+}
+
+run_rc_command "$1"

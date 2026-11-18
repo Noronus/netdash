@@ -1,0 +1,5 @@
+<menu>
+    <Services>
+        <Netdash VisibleName="netdash" cssClass="fa fa-tachometer fa-fw" url="/ui/netdash/"/>
+    </Services>
+</menu>

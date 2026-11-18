@@ -1,0 +1,8 @@
+<acl>
+    <page-services-netdash>
+        <name>Services: netdash</name>
+        <patterns>
+            <pattern>ui/netdash/*</pattern>
+        </patterns>
+    </page-services-netdash>
+</acl>

@@ -1,0 +1,11 @@
+{
+  "wan_ip": "",
+  "dir": "/etc/netdash-vps",
+  "home_nets": ["192.168.1.0/24"],
+  "wg_net": "10.99.0.0/24",
+  "wg_first": "",
+  "wg_ports": "51820-51899",
+  "home_routes": "192.168.1.0/24",
+  "dns": "192.168.1.1",
+  "name": "VPS"
+}
