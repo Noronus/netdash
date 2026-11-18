@@ -14,7 +14,11 @@ function VlanEditor({ port, full, isUplink, isMine }: { port: SwPort; full: Full
   const [t, setT] = useState<number[]>([])
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
-  const load = () => api<any>('/api/switch/vlaninfo?port=' + port.name).then((r) => { setInfo(r); setU(r.untagged); setT(r.tagged) }).catch((e) => setMsg('Fehler: ' + e.message))
+  const load = () => api<any>('/api/switch/vlaninfo?port=' + port.name).then((r) => {
+    // an incomplete answer must not take the whole page down
+    const i = { mode: r.mode ?? 0, all: r.all || [], untagged: r.untagged ?? null, tagged: r.tagged || [] }
+    setInfo(i); setU(i.untagged); setT(i.tagged)
+  }).catch((e) => setMsg('Fehler: ' + e.message))
   useEffect(() => { load() }, [port.name])
   const vname = (v: number) => {
     const i = full.interfaces.find((x) => Number(x.vlan) === v)

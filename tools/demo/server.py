@@ -349,6 +349,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(detail(m.group(1)) or {"error": "not found"})
         if p == "/api/unraid/zfs":
             return self.send_json(zfs())
+        if p == "/api/switch/vlaninfo":  # uplink X2 is the trunk, the rest are access ports in their VLAN
+            port = (self.path.split("port=") + [""])[1].split("&")[0]
+            vlan = {"P4": 10, "X1": 30}.get(port, 1)
+            if port == "X2":
+                return self.send_json({"port": port, "mode": 2, "all": [1, 10, 20, 30], "untagged": 1, "tagged": [10, 20, 30]})
+            return self.send_json({"port": port, "mode": 1, "all": [1, 10, 20, 30], "untagged": vlan, "tagged": []})
         if p == "/api/diag/sources":
             return self.send_json({"sources": [{"device": "igb0", "descr": "WAN", "v4": ["192.168.178.2"], "v6": ["2001:db8::2"]},
                                                {"device": "igb1", "descr": "LAN", "v4": ["192.168.1.1"], "v6": []},
