@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Ban, Check, Database, Pencil, Pin, Power, X } from 'lucide-react'
+import { Ban, Cable, Check, Database, Pencil, Pin, Power, X } from 'lucide-react'
 import ZfsDialog from '../components/Zfs'
 import { api, Detail, Full, refreshState, saveDevice } from '../api'
 import { AreaChart, Bars } from '../components/charts'
@@ -100,11 +100,20 @@ export default function DeviceDrawer({ mac, full, onClose }: { mac: string; full
               </div>
             </Card>
           )}
+          {edit && (
+            <Card title="Anschluss">
+              <div className="row wrap" style={{ gap: 10 }}>
+                <span className="grow"><AttachCell d={dev} long />{dev.attach?.manual && <span className="dim" style={{ fontSize: 12 }}> · fest zugewiesen</span>}</span>
+                <button className="btn sm" onClick={() => setAssign(true)}><Cable size={13} />{dev.place ? 'Anschluss ändern' : 'Switch-Port fest zuweisen'}</button>
+              </div>
+            </Card>
+          )}
           {err && <div className="err">{err}</div>}
 
           <div className="row wrap" style={{ gap: 8 }}>
             {isUnraid && <button className="btn sm primary" onClick={() => setZfs(true)}><Database size={13} />ZFS-Speicher</button>}
             <button className="btn sm" disabled={!!busyAct} onClick={() => act('wol', {}, 'Magic Packet gesendet.')}><Power size={13} />Aufwecken (WoL)</button>
+            {dev.link !== 'wifi' && <button className="btn sm" onClick={() => setAssign(true)}><Cable size={13} />{dev.place ? 'Switch-Port ändern' : 'Switch-Port fest zuweisen'}</button>}
             <button className={'btn sm' + (dev.blocked ? ' primary' : '')} disabled={!!busyAct}
               onClick={() => (dev.blocked || confirm(`${dev.name} vom Internet trennen? Lokale Netze bleiben erreichbar.`)) && act('block', { on: !dev.blocked }, dev.blocked ? 'Internet wieder freigegeben.' : 'Internet gesperrt.')}>
               <Ban size={13} />{dev.blocked ? 'Internet freigeben' : 'Internet sperren'}</button>
@@ -177,7 +186,7 @@ export default function DeviceDrawer({ mac, full, onClose }: { mac: string; full
               <dt>IPv4</dt><dd className="mono">{dev.ipv4.length ? dev.ipv4.join(', ') : dev.ip || '–'}</dd>
               {dev.ipv6.length > 0 && <><dt>IPv6</dt><dd className="mono" style={{ fontSize: 11.5 }}>{dev.ipv6.join('\n')}</dd></>}
               <dt>MAC</dt><dd className="mono">{dev.mac}{dev.private_mac ? <span className="dim"> · private/zufällige MAC</span> : null}</dd>
-              <dt>Angeschlossen</dt><dd className="row gap6"><AttachCell d={dev} long />{dev.attach?.manual && <Badge>fest zugewiesen</Badge>}<button className="btn sm ghost" onClick={() => setAssign(true)}>{dev.place ? 'ändern' : 'fest zuweisen'}</button></dd>
+              <dt>Angeschlossen</dt><dd className="row gap6"><AttachCell d={dev} long />{dev.attach?.manual && <Badge>fest zugewiesen</Badge>}<button className="btn sm" onClick={() => setAssign(true)}>{dev.place ? 'ändern' : 'fest zuweisen'}</button></dd>
               <dt>Netz</dt><dd>{(dev.networks && dev.networks.length ? dev.networks : [dev.network]).join(', ') || '–'}</dd>
               <dt>Hostname</dt><dd>{dev.hostname || '–'}</dd>
               <dt>DHCP</dt><dd>{dev.dhcp === 'static' ? 'statisches DHCP-Lease (dnsmasq)' : dev.dhcp === 'dynamic' ? `dynamisch, läuft ab ${dateTime(dev.lease_expire)}` : 'kein DHCP, IP ist am Gerät fest eingestellt'}</dd>
