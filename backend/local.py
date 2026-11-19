@@ -194,8 +194,8 @@ class Devices:
         self._load_oui()
         self.meta = {r[0]: {"name": r[1], "icon": r[2], "note": r[3], "first_seen": r[4], "last_seen": r[5],
                             "online_since": r[6], "last_ip": r[7], "last_if": r[8],
-                            "place": json.loads(r[9]) if r[9] else None}
-                     for r in db.q("SELECT mac,name,icon,note,first_seen,last_seen,online_since,last_ip,last_if,place FROM device")}
+                            "place": json.loads(r[9]) if r[9] else None, "last_name": r[10]}
+                     for r in db.q("SELECT mac,name,icon,note,first_seen,last_seen,online_since,last_ip,last_if,place,last_name FROM device")}
 
     def _load_oui(self):
         try:
@@ -347,9 +347,12 @@ class Devices:
                 if ip in hints:
                     hint = hints[ip]
                     break
+            # UniFi, the DHCP lease and the DNS hint go away when the device is off: keep the last name they gave
+            auto_name = ex.get("name") or hostname or hint
+            last_name = auto_name or meta.get("last_name")
             dev = {
                 "mac": mac,
-                "name": meta.get("name") or ex.get("name") or hostname or hint or primary_v4 or mac,
+                "name": meta.get("name") or last_name or primary_v4 or mac,
                 "networks": sorted({self.ifaces.descr(n) for n in (s["ipif"].values() if s else [])}),
                 "custom_name": meta.get("name"),
                 "hostname": hostname,
@@ -380,16 +383,17 @@ class Devices:
                 if netif:
                     mac_if[mac] = netif
             changed = (meta.get("online_since") != online_since or not meta or
-                       (online and (t - (meta.get("last_seen") or 0)) > 60) or meta.get("last_ip") != primary_v4)
+                       (online and (t - (meta.get("last_seen") or 0)) > 60) or meta.get("last_ip") != primary_v4 or
+                       meta.get("last_name") != last_name)
             if changed:
                 meta_updates.append((mac, meta.get("name"), meta.get("icon"), meta.get("note"), int(first_seen),
-                                     int(last_sign or t), online_since, primary_v4, netif))
+                                     int(last_sign or t), online_since, primary_v4, netif, last_name))
                 self.meta[mac] = {**meta, "first_seen": int(first_seen), "last_seen": int(last_sign or t),
-                                  "online_since": online_since, "last_ip": primary_v4, "last_if": netif}
+                                  "online_since": online_since, "last_ip": primary_v4, "last_if": netif, "last_name": last_name}
         self.db.many(
-            "INSERT INTO device(mac,name,icon,note,first_seen,last_seen,online_since,last_ip,last_if) VALUES(?,?,?,?,?,?,?,?,?) "
+            "INSERT INTO device(mac,name,icon,note,first_seen,last_seen,online_since,last_ip,last_if,last_name) VALUES(?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(mac) DO UPDATE SET first_seen=excluded.first_seen, last_seen=excluded.last_seen, "
-            "online_since=excluded.online_since, last_ip=excluded.last_ip, last_if=excluded.last_if",
+            "online_since=excluded.online_since, last_ip=excluded.last_ip, last_if=excluded.last_if, last_name=excluded.last_name",
             meta_updates)
         with self.lock:
             self.ip2mac = ip2mac

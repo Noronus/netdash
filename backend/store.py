@@ -89,6 +89,8 @@ class DB:
         cols = [r[1] for r in self.conn.execute("PRAGMA table_info(device)")]
         if "place" not in cols:
             self.conn.execute("ALTER TABLE device ADD COLUMN place TEXT")
+        if "last_name" not in cols:  # last name from UniFi / DHCP / DNS, kept while the device is off
+            self.conn.execute("ALTER TABLE device ADD COLUMN last_name TEXT")
         self.conn.commit()
 
     def q(self, sql, args=()):
