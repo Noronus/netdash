@@ -68,6 +68,10 @@ class VPS:
         d["name"] = self.cfg.get("name") or "VPS"
         d["history"] = self.history[:10]
         try:
+            d["fw"] = self._ssh("fw-status")
+        except Exception as e:
+            d["fw_error"] = str(e)[:200]
+        try:
             w = self._ssh("wg")
             d["wg"] = w.get("tunnels", [])
             d["wg_defaults"] = w.get("defaults")
@@ -121,6 +125,23 @@ class VPS:
         self.collect()
         return r
 
+    def wg_edit(self, name, ch):
+        """address/port of the tunnel, comment/AllowedIPs/keepalive of its peers; the helper checks the details"""
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,14}", name or ""):
+            raise ValueError("Ungültiger Tunnelname")
+        out = {k: str(ch[k])[:200] for k in ("address", "port") if k in ch}
+        peers = []
+        for p in ch.get("peers") or []:
+            if isinstance(p, dict) and p.get("pub"):
+                peers.append({"pub": str(p["pub"])[:60], **{k: str(p[k] if p[k] is not None else "")[:400]
+                                                            for k in ("comment", "allowed", "keepalive") if k in p}})
+        out["peers"] = peers
+        r = self._ssh("wg-edit %s" % name, inp=json.dumps(out), timeout=60)
+        if r.get("changed"):
+            self.history.insert(0, {"t": int(time.time()), "what": "WireGuard %s bearbeitet%s" % (name, ", neu gestartet" if r.get("restarted") else "")})
+        self.collect()
+        return r
+
     def apply(self, forwards):
         """apply, check the VPS still answers, then confirm; otherwise it rolls back by itself after 60 s"""
         with self.lock:
@@ -136,6 +157,30 @@ class VPS:
             self.history.insert(0, {"t": int(time.time()), "what": "übernommen und bestätigt", "n": len(forwards)})
             self.collect()
             return st
+
+    def fw_apply(self, cfg):
+        """firewall settings + own rules: apply, check the VPS still answers over SSH, then confirm (else it rolls back in 60 s)"""
+        if not isinstance(cfg, dict):
+            raise ValueError("Einstellungen erwartet")
+        with self.lock:
+            self._ssh("fw-apply", inp=json.dumps(cfg), timeout=40)
+            time.sleep(2)
+            try:
+                # a fresh connection, not the shared one: proves new SSH connections still get through
+                base = self._base()
+                base = base[:-2] if base[-1].startswith("ControlPath=") else base   # ssh takes the first value of an option
+                p = subprocess.run(base + ["-o", "ControlPath=none", self._target(), "fw-status"],
+                                   capture_output=True, text=True, timeout=20)
+                json.loads((p.stdout or "").strip().splitlines()[-1])
+            except Exception as e:
+                self.history.insert(0, {"t": int(time.time()), "what": "Firewall übernommen, VPS antwortet nicht, Rücknahme in 60 s",
+                                        "error": str(e)[:200]})
+                raise RuntimeError("VPS antwortet nach dem Übernehmen nicht mehr über eine neue SSH-Verbindung, "
+                                   "er nimmt die Firewall-Änderung in 60 s selbst zurück")
+            self._ssh("fw-confirm")
+            self.history.insert(0, {"t": int(time.time()), "what": "Firewall übernommen und bestätigt"})
+        self.collect()
+        return {"ok": True}
 
     def test(self, ip, port):
         return self._ssh("test %s %d" % (ip, int(port)))

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import {
-  Activity, ArrowLeftRight, BrickWall, Globe, Share2, Stethoscope, Workflow, LayoutDashboard, Settings as SettingsIcon, LogOut, Menu, MonitorSmartphone, Network, Search, Server, ShieldCheck, Waypoints, Wifi,
+  Activity, ArrowLeftRight, BrickWall, Globe, Share2, Stethoscope, Workflow, LayoutDashboard, Settings as SettingsIcon, LogOut, Menu, MonitorSmartphone, Network, Search, Server, ShieldCheck, ShieldHalf, Waypoints, Wifi,
 } from 'lucide-react'
 import { logout, useStore, Full } from './api'
 import { rate } from './format'
@@ -19,6 +19,7 @@ import Settings from './pages/Settings'
 import Firewall from './pages/Firewall'
 import Topology from './pages/Topology'
 import Forwards from './pages/Forwards'
+import VpsFirewall from './pages/VpsFirewall'
 import Diag from './pages/Diag'
 
 export type Route = { page: string; arg?: string; q?: string; d?: string }
@@ -54,6 +55,7 @@ const NAV: [string, string, React.ComponentType<any>][] = [
   ['networks', 'Netzwerke', Network],
   ['wifi', 'WLAN', Wifi],
   ['firewall', 'Firewall', BrickWall],
+  ['vpsfw', 'Firewall-VPS', ShieldHalf],
   ['vpn', 'VPN', Waypoints],
   ['services', 'Dienste', Activity],
   ['servers', 'Server', Server],
@@ -108,6 +110,7 @@ export default function App() {
     case 'firewall': body = <Firewall full={full} />; break
     case 'topology': body = <Topology full={full} />; break
     case 'forwards': body = <Forwards full={full} />; break
+    case 'vpsfw': body = <VpsFirewall full={full} />; break
     case 'diag': body = <Diag full={full} />; break
     default: body = <Overview full={full} ifHist={s.ifHist} />
   }

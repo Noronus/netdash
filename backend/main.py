@@ -644,7 +644,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/vps/wg":
             body = self.read_json()
             try:
-                if body.get("action") == "create":
+                if body.get("action") == "edit":
+                    r = self.app.vps.wg_edit(str(body.get("name", "")), body.get("changes") or {})
+                elif body.get("action") == "create":
                     r = self.app.vps.wg_create(str(body.get("name", "")).strip().lower(), str(body.get("route", "home")),
                                                str(body.get("dns", "adguard")))
                 else:
@@ -655,6 +657,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.send_json({"error": "Fehler: %s" % e}, 500)
             if body.get("action") not in ("config",):
                 log("vps wg", body, "by", user)
+            return self.send_json(r)
+        if path == "/api/vps/firewall":
+            body = self.read_json()
+            try:
+                r = self.app.vps.fw_apply(body.get("config"))
+            except ValueError as e:
+                return self.send_json({"error": str(e)}, 400)
+            except Exception as e:
+                log("vps firewall failed", traceback.format_exc(limit=3))
+                return self.send_json({"error": "Fehler: %s" % e}, 500)
+            log("vps firewall by", user, json.dumps(body, ensure_ascii=False)[:400])
             return self.send_json(r)
         if path in ("/api/vps/forwards", "/api/vps/test"):
             body = self.read_json()

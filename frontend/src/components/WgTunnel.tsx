@@ -79,3 +79,83 @@ export function NewTunnel({ onClose, onCreated, defs }: { onClose: () => void; o
     </div>
   )
 }
+
+type PeerForm = { pub: string; comment: string; allowed: string; keepalive: string }
+
+/** edit any tunnel on the VPS (also ones made by hand): address/port, per peer label, AllowedIPs, keepalive.
+ * Keys and PostUp/PostDown stay as they are; the VPS archives the old config and restores it if the tunnel does not start. */
+export function EditTunnel({ t, others, onClose }: { t: any; others: any[]; onClose: () => void }) {
+  const peers0: PeerForm[] = (t.peers || []).map((p: any) => ({ pub: p.pub, comment: p.comment || '', allowed: p.allowed || '', keepalive: p.keepalive || '' }))
+  const [address, setAddress] = useState<string>(t.address || '')
+  const [port, setPort] = useState<string>(String(t.port || '').trim())
+  const [peers, setPeers] = useState<PeerForm[]>(peers0)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const setPeer = (i: number, f: Partial<PeerForm>) => setPeers(peers.map((p, j) => (j === i ? { ...p, ...f } : p)))
+  const clash = (key: 'port' | 'address', v: string) => others.filter((o) => o.name !== t.name && String(o[key] || '').trim() === v.trim() && v.trim())
+  const portClash = clash('port', port), addrClash = clash('address', address)
+  const changed = address !== (t.address || '') || port !== String(t.port || '').trim() || JSON.stringify(peers) !== JSON.stringify(peers0)
+  async function save() {
+    setBusy(true); setErr('')
+    const changes: any = { peers: peers.filter((p, i) => JSON.stringify(p) !== JSON.stringify(peers0[i])) }
+    if (address !== (t.address || '')) changes.address = address
+    if (port !== String(t.port || '').trim()) changes.port = port
+    try {
+      await api('/api/vps/wg', { method: 'POST', body: JSON.stringify({ action: 'edit', name: t.name, changes }) })
+      await refreshState()
+      onClose()
+    } catch (e: any) { setErr(e.message) } finally { setBusy(false) }
+  }
+  return (
+    <div className="modal-wrap" onClick={onClose}>
+      <div className="modal" style={{ width: 'min(640px, 100%)' }} onClick={(e) => e.stopPropagation()}>
+        <div className="row"><b className="grow">Tunnel {t.name} bearbeiten</b><button className="icon-btn" onClick={onClose}><X size={16} /></button></div>
+        <div className="row wrap" style={{ gap: 10 }}>
+          <label className="dlabel grow">Adresse auf dem VPS
+            <input className="input mono" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="10.0.50.1/30" />
+          </label>
+          <label className="dlabel" style={{ width: 130 }}>UDP-Port
+            <input className="input mono" value={port} inputMode="numeric" onChange={(e) => setPort(e.target.value.replace(/[^0-9]/g, ''))} />
+          </label>
+        </div>
+        {(portClash.length > 0 || addrClash.length > 0) && (
+          <div style={{ fontSize: 12, color: 'var(--warn)' }}>
+            {portClash.length > 0 && <>Port {port} haben auch: {portClash.map((o) => o.name + (o.active ? ' (aktiv)' : '')).join(', ')}. </>}
+            {addrClash.length > 0 && <>Adresse {address} haben auch: {addrClash.map((o) => o.name + (o.active ? ' (aktiv)' : '')).join(', ')}. </>}
+            Nur einer davon kann gleichzeitig laufen.
+          </div>
+        )}
+        {peers.map((p, i) => (
+          <div key={p.pub} className="col" style={{ gap: 8, padding: 10, borderRadius: 10, border: '1px solid var(--border-soft)', background: 'var(--bg-2)' }}>
+            <div className="dim mono ell" style={{ fontSize: 11 }} title={p.pub}>Peer {peers.length > 1 ? i + 1 + ' · ' : ''}{p.pub}</div>
+            <label className="dlabel">Bezeichnung
+              <input className="input" value={p.comment} maxLength={60} placeholder="z. B. Handy von Marc" onChange={(e) => setPeer(i, { comment: e.target.value })} />
+            </label>
+            <label className="dlabel">AllowedIPs (Adressen der Gegenstelle, durch Komma getrennt)
+              <input className="input mono" value={p.allowed} onChange={(e) => setPeer(i, { allowed: e.target.value })} />
+            </label>
+            <label className="dlabel" style={{ width: 200 }}>Keepalive (Sekunden, leer = aus)
+              <input className="input mono" value={p.keepalive} inputMode="numeric" onChange={(e) => setPeer(i, { keepalive: e.target.value.replace(/[^0-9]/g, '') })} />
+            </label>
+          </div>
+        ))}
+        {(t.hook_lines || []).length > 0 && (
+          <details>
+            <summary className="dim" style={{ fontSize: 12, cursor: 'pointer' }}>Firewall-Regeln des Tunnels (PostUp/PostDown, bleiben unverändert)</summary>
+            <pre className="console" style={{ minHeight: 0, maxHeight: 180, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{t.hook_lines.join('\n')}</pre>
+          </details>
+        )}
+        <div className="dim" style={{ fontSize: 12 }}>
+          Schlüssel bleiben gleich, die alte Konfiguration wird auf dem VPS archiviert.
+          {t.active ? ' Der Tunnel wird neu gestartet (kurze Unterbrechung); startet er nicht, wird die alte Konfiguration wiederhergestellt.' : ''}
+          {port !== String(t.port || '').trim() ? ' Neuer Port: in der Client-Konfiguration (Endpoint) und ggf. in der Firewall des VPS-Anbieters anpassen.' : ''}
+        </div>
+        {err && <div className="err">{err}</div>}
+        <div className="row" style={{ gap: 8, justifyContent: 'flex-end' }}>
+          <button className="btn ghost" onClick={onClose}>Abbrechen</button>
+          <button className="btn primary" disabled={!changed || busy || !address.trim()} onClick={save}>{busy ? 'Speichere …' : 'Speichern'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}

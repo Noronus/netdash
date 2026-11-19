@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
-import { FileCode, Play, Plus, Square, Trash2, Waypoints } from 'lucide-react'
-import { NewTunnel, WgConfigView } from '../components/WgTunnel'
+import { FileCode, Pencil, Play, Plus, Square, Trash2, Waypoints } from 'lucide-react'
+import { EditTunnel, NewTunnel, WgConfigView } from '../components/WgTunnel'
 import { api, Full, refreshState } from '../api'
 import { Badge, Card, Dot, SrcError } from '../components/ui'
 import { ago, bytes } from '../format'
@@ -10,6 +10,7 @@ function VpsWireGuard({ full }: { full: Full }) {
   const [busy, setBusy] = useState<string | null>(null)
   const [msg, setMsg] = useState('')
   const [creating, setCreating] = useState(false)
+  const [editing, setEditing] = useState<string | null>(null)
   const [show, setShow] = useState<{ name: string; config: string; fresh?: boolean } | null>(null)
   const tunnels: any[] = v?.wg || []
   if (!v) return null
@@ -37,9 +38,10 @@ function VpsWireGuard({ full }: { full: Full }) {
               const p = t.peers[0] || {}
               const fresh = p.handshake && Date.now() / 1000 - p.handshake < 180
               const label = t.name.replace(/^wg-/, '') || t.name
+              const note = (t.peers || []).map((x: any) => x.comment).filter(Boolean).join(', ')
               return (
                 <tr key={t.name} className={t.active ? '' : 'off'} style={{ cursor: 'default' }}>
-                  <td><div className="row gap6"><Dot t={!t.active ? 'off' : fresh ? 'ok' : 'warn'} /><b>{label}</b><span className="dim mono" style={{ fontSize: 11 }}>{t.name}</span>{t.created && <span className="badge acc" style={{ padding: '1px 6px' }} title="vom Dashboard angelegt">netdash</span>}</div></td>
+                  <td><div className="row gap6"><Dot t={!t.active ? 'off' : fresh ? 'ok' : 'warn'} /><b>{label}</b><span className="dim mono" style={{ fontSize: 11 }}>{t.name}</span>{note && <span className="dim ell" style={{ fontSize: 11.5, maxWidth: 160 }} title={note}>{note}</span>}{t.created && <span className="badge acc" style={{ padding: '1px 6px' }} title="vom Dashboard angelegt">netdash</span>}</div></td>
                   <td><div className="row gap6">{t.active ? <Badge t={fresh ? 'ok' : 'warn'}>{fresh ? 'verbunden' : 'aktiv, kein Handshake'}</Badge> : <Badge>aus</Badge>}{t.autostart && <Badge>Autostart</Badge>}</div></td>
                   <td className="mono" style={{ fontSize: 12 }}>{t.address}<span className="dim"> · {t.port}</span></td>
                   <td className="mono dim" style={{ fontSize: 12 }}>{p.endpoint || '–'}</td>
@@ -53,6 +55,7 @@ function VpsWireGuard({ full }: { full: Full }) {
                         ? <button className="btn sm" disabled={busy === t.name} onClick={() => act(t.name, 'down', `Tunnel ${label} stoppen? Die Gegenstelle verliert die Verbindung.`)}><Square size={12} />Stopp</button>
                         : <button className="btn sm" disabled={busy === t.name} onClick={() => act(t.name, 'up')}><Play size={12} />Start</button>}
                       <button className="btn sm ghost" disabled={busy === t.name} title="beim Booten des VPS starten" onClick={() => act(t.name, t.autostart ? 'autostart_off' : 'autostart_on')}>{t.autostart ? 'Autostart aus' : 'Autostart an'}</button>
+                      <button className="icon-btn" title="Bearbeiten (Adresse, Port, AllowedIPs, Bezeichnung)" disabled={busy === t.name} onClick={() => setEditing(t.name)}><Pencil size={14} /></button>
                       {t.has_client && <button className="icon-btn" title="Client-Konfiguration / QR-Code" onClick={() => showConfig(t.name)}><FileCode size={14} /></button>}
                       {t.created && <button className="icon-btn" title="Tunnel löschen" disabled={busy === t.name} onClick={() => act(t.name, 'delete', `Tunnel ${label} löschen? Das Gerät kann sich danach nicht mehr verbinden. Die Konfiguration wird auf dem VPS archiviert.`)}><Trash2 size={14} /></button>}
                     </div>
@@ -64,6 +67,7 @@ function VpsWireGuard({ full }: { full: Full }) {
         </table>
       </div>
       {creating && <NewTunnel defs={v.wg_defaults} onClose={() => setCreating(false)} onCreated={(name, config) => { setCreating(false); setShow({ name, config, fresh: true }) }} />}
+      {editing && tunnels.find((t) => t.name === editing) && <EditTunnel t={tunnels.find((t) => t.name === editing)} others={tunnels} onClose={() => setEditing(null)} />}
       {show && <WgConfigView name={show.name} config={show.config} fresh={show.fresh} onClose={() => setShow(null)} />}
     </Card>
   )

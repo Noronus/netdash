@@ -19,15 +19,28 @@ Commands (from the dashboard via an SSH key restricted to this program, or by ha
   wg-create NAME home|all adguard|none   new tunnel wg-NAME, prints the client config (JSON)
   wg-config NAME    client config of a tunnel created here
   wg-delete NAME    remove a tunnel created here (config moved to /etc/wireguard/archiv)
+  wg-edit NAME      JSON on stdin {address, port, peers: [{pub, comment, allowed, keepalive}]}: change any tunnel,
+                    keys and PostUp/PostDown stay; old config to archiv; restarted if active, restored if that fails
   ifaces            network interfaces with addresses and byte counters (JSON, read only)
+  fw-status         JSON: firewall settings, effective rules with counters, public listeners and whether they are open
+  fw-apply          JSON settings on stdin; applied now, rolled back after 60 s unless fw-confirm follows
+  fw-confirm / fw-rollback
+  fw-refresh        load the firewall again (automatic rules: tunnels, forwards, Docker); boot runs it after 60 and 180 s
+
+Firewall: own chain NETDASH-FW (iptables + ip6tables) for traffic arriving on the public interface, jumped from INPUT
+(services on the VPS) and DOCKER-USER (Docker published ports and the port forwards, matched on the original
+destination port). Tunnels and Docker networks are not touched. Always allowed: established connections, the SSH port,
+DHCP; automatically allowed (switchable): WireGuard ports, port forwards, Docker published ports.
 """
 import ipaddress
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 CONFIG_FILE = os.environ.get("NETDASH_VPS_CONFIG", "/etc/netdash-vps/config.json")
@@ -203,6 +216,7 @@ def cmd_apply():
     fwds = validate(json.loads(sys.stdin.read() or "[]"))
     save(PENDING, fwds)
     apply_rules(fwds)
+    fw_refresh()
     subprocess.run(["systemctl", "stop", TIMER + ".timer"], capture_output=True)
     sh("systemd-run", "--unit", TIMER, "--on-active=%ds" % DEADMAN, "--timer-property=AccuracySec=1s",
        "/usr/local/sbin/netdash-vps", "rollback", check=False)
@@ -220,6 +234,7 @@ def cmd_rollback():
     if os.path.exists(PENDING):
         os.remove(PENDING)
     apply_rules(load(CONF))
+    fw_refresh()
     subprocess.run(["systemctl", "stop", TIMER + ".timer"], capture_output=True)
     print(json.dumps({"ok": True}))
 
@@ -228,6 +243,389 @@ def cmd_boot():
     if os.path.exists(PENDING):
         os.remove(PENDING)
     apply_rules(load(CONF))
+    if os.path.exists(FW_PENDING):
+        os.remove(FW_PENDING)
+    fw_refresh()
+    # at boot this runs before Docker, WireGuard and NetBird: load the firewall again once they are up
+    if os.path.exists(FW_CONF):
+        for i, delay in enumerate((60, 180)):
+            subprocess.run(["systemd-run", "--unit", "netdash-vps-fw-late%d" % i, "--on-active=%ds" % delay,
+                            "/usr/local/sbin/netdash-vps", "fw-refresh"], capture_output=True)
+
+
+# ------------------------------------------------------------------ firewall (incoming on the public interface)
+FW_CHAIN = "NETDASH-FW"
+FW_CONF = os.path.join(DIR, "firewall.json")
+FW_PENDING = os.path.join(DIR, "firewall.pending.json")
+FW_TIMER = "netdash-vps-fw-rollback"
+FW_DEFAULT = {"enabled": False, "ping": True, "auto": {"wg": True, "forwards": True, "docker": True}, "rules": []}
+PROTOS = ("tcp", "udp", "tcpudp", "icmp", "any")
+
+
+def _wan_if():
+    if CFG.get("wan_if"):
+        return CFG["wan_if"]
+    try:
+        return json.loads(subprocess.run(["ip", "-j", "route", "get", "1.1.1.1"], capture_output=True, text=True).stdout)[0]["dev"]
+    except Exception:
+        return ""
+
+
+WAN_IF = _wan_if()
+
+
+def ssh_ports():
+    out = set()
+    for line in subprocess.run(["sshd", "-T"], capture_output=True, text=True).stdout.splitlines():
+        k, _, v = line.partition(" ")
+        if k == "port" and v.strip().isdigit():
+            out.add(int(v))
+    return sorted(out or {22})
+
+
+def fw_load():
+    for path in (FW_PENDING, FW_CONF):
+        if os.path.exists(path):
+            try:
+                c = json.load(open(path))
+                return {**FW_DEFAULT, **c, "auto": {**FW_DEFAULT["auto"], **(c.get("auto") or {})}}
+            except ValueError:
+                pass
+    return json.loads(json.dumps(FW_DEFAULT))
+
+
+def _ports(v):
+    """'' -> None (all), '80' -> '80', '8000-8100' -> '8000:8100'"""
+    v = str(v or "").strip().replace(" ", "")
+    if not v:
+        return None
+    m = re.fullmatch(r"(\d{1,5})(?:[-:](\d{1,5}))?", v)
+    if not m:
+        raise ValueError("Port: Zahl oder Bereich wie 8000-8100")
+    a, b = int(m.group(1)), int(m.group(2) or m.group(1))
+    if not (1 <= a <= b <= 65535):
+        raise ValueError("Port außerhalb 1-65535")
+    return str(a) if a == b else "%d:%d" % (a, b)
+
+
+def fw_validate(c):
+    if not isinstance(c, dict):
+        raise ValueError("Einstellungen erwartet")
+    rules = c.get("rules") or []
+    if not isinstance(rules, list) or len(rules) > 200:
+        raise ValueError("Regelliste erwartet")
+    clean = []
+    for i, r in enumerate(rules):
+        proto = str(r.get("proto", "tcp")).lower()
+        if proto not in PROTOS:
+            raise ValueError("Protokoll: tcp, udp, tcpudp, icmp oder any")
+        ports = _ports(r.get("port")) if proto in ("tcp", "udp", "tcpudp") else None
+        src = str(r.get("source") or "").strip()
+        if src:
+            try:
+                src = str(ipaddress.ip_network(src, strict=False))
+            except ValueError:
+                raise ValueError("Quelle %s ist keine IP oder kein Netz" % src)
+        fam = str(r.get("family") or "both")
+        if fam not in ("both", "4", "6"):
+            raise ValueError("IP-Version: both, 4 oder 6")
+        if src and fam != "both" and str(ipaddress.ip_network(src).version) != fam:
+            raise ValueError("Quelle %s passt nicht zur IP-Version" % src)
+        action = str(r.get("action", "accept"))
+        if action not in ("accept", "drop"):
+            raise ValueError("Aktion accept oder drop")
+        rid = re.sub(r"[^a-z0-9]", "", str(r.get("id") or ""))[:12] or "%x%04x" % (int(time.time()) & 0xffffff, i)
+        comment = re.sub(r"[^\w .,:()/+@äöüÄÖÜß-]", "", str(r.get("comment", "")))[:60]
+        clean.append({"id": rid, "action": action, "proto": proto, "port": ports.replace(":", "-") if ports else "",
+                      "source": src, "family": fam, "comment": comment, "enabled": bool(r.get("enabled", True))})
+    if len({r["id"] for r in clean}) != len(clean):
+        raise ValueError("Regel-IDs doppelt")
+    auto = c.get("auto") or {}
+    return {"enabled": bool(c.get("enabled")), "ping": bool(c.get("ping", True)),
+            "auto": {k: bool(auto.get(k, True)) for k in ("wg", "forwards", "docker")}, "rules": clean}
+
+
+def wg_ports():
+    """udp ports of all WireGuard tunnels: configured in /etc/wireguard and running (also NetBird's wt0)"""
+    out = {}
+    for name, c in wg_confs().items():
+        p = (c["iface"].get("ListenPort") or "").strip()
+        if p.isdigit():
+            out.setdefault(int(p), []).append(name)
+    for name, r in wg_runtime().items():
+        if str(r.get("listen") or "").isdigit() and int(r["listen"]):
+            out.setdefault(int(r["listen"]), [])
+            if name not in out[int(r["listen"])]:
+                out[int(r["listen"])].append(name)
+    return out
+
+
+FW_DOCKER_CACHE = os.path.join(DIR, "firewall.docker.json")
+
+
+def docker_ports():
+    """published host ports of running containers: [(proto, port, container)]; while Docker is not up yet (boot)
+    the last known ones, so its services are not blocked until the next refresh"""
+    out = set()
+    try:
+        p = subprocess.run(["docker", "ps", "--format", "{{.Names}}\t{{.Ports}}"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        p = None
+    if p is None or p.returncode != 0:
+        return [tuple(x) for x in load(FW_DOCKER_CACHE)] if shutil.which("docker") else []
+    for line in p.stdout.splitlines():
+        name, _, ports = line.partition("\t")
+        for m in re.finditer(r"(?:[\d.]+|\[?::\]?):(\d+)(?:-(\d+))?->\d+(?:-\d+)?/(tcp|udp)", ports):
+            a = int(m.group(1))
+            out.add((m.group(3), a if not m.group(2) else "%d:%s" % (a, m.group(2)), name))
+    res = sorted(out, key=lambda x: (str(x[1]), x[0]))
+    if res != [tuple(x) for x in load(FW_DOCKER_CACHE)]:
+        try:
+            save(FW_DOCKER_CACHE, res)
+        except OSError:
+            pass
+    return res
+
+
+def fw_effective(c):
+    """the full ordered rule list, as shown in the dashboard: fixed, own, automatic, default"""
+    out = [{"id": "est", "src": "fixed", "action": "accept", "proto": "any", "comment": "Antworten auf erlaubte Verbindungen (ausgehende und eingehende)"}]
+    for p in ssh_ports():
+        out.append({"id": "ssh%d" % p, "src": "fixed", "action": "accept", "proto": "tcp", "port": str(p),
+                    "comment": "SSH, immer offen (netdash und Notfallzugang)"})
+    out.append({"id": "dhcp", "src": "fixed", "action": "accept", "proto": "udp", "port": "68", "family": "4", "comment": "DHCP-Client"})
+    out.append({"id": "dhcp6", "src": "fixed", "action": "accept", "proto": "udp", "port": "546", "family": "6", "comment": "DHCPv6-Client"})
+    out.append({"id": "icmp6", "src": "fixed", "action": "accept", "proto": "icmp", "family": "6", "noping": True,
+                "comment": "ICMPv6 (Nachbarerkennung, nötig für IPv6)"})
+    out.append({"id": "icmp", "src": "fixed", "action": "accept", "proto": "icmp", "family": "4", "noping": True,
+                "comment": "ICMP-Fehlermeldungen (MTU, nicht erreichbar)"})
+    out.append({"id": "ping", "src": "fixed", "action": "accept" if c["ping"] else "drop", "proto": "ping",
+                "comment": "Ping " + ("erlaubt" if c["ping"] else "blockiert")})
+    for r in c["rules"]:
+        out.append({**r, "src": "user"})
+    if c["auto"]["wg"]:
+        for port, names in sorted(wg_ports().items()):
+            out.append({"id": "wg%d" % port, "src": "wg", "action": "accept", "proto": "udp", "port": str(port),
+                        "comment": "WireGuard " + ", ".join(names)})
+    if c["auto"]["forwards"]:
+        fw = load(PENDING) if os.path.exists(PENDING) else load(CONF)
+        for f in fw:
+            if f.get("enabled"):
+                out.append({"id": "pf%s%d" % (f["proto"][0], f["port"]), "src": "forward", "action": "accept", "proto": f["proto"],
+                            "port": str(f["port"]), "family": "4",
+                            "comment": "Portfreigabe → %s:%d%s" % (f["to_ip"], f["to_port"], (" · " + f["comment"]) if f.get("comment") else "")})
+    if c["auto"]["docker"]:
+        for proto, port, name in docker_ports():
+            out.append({"id": "dk%s%s" % (proto[0], str(port).replace(":", "-")), "src": "docker", "action": "accept", "proto": proto,
+                        "port": str(port).replace(":", "-"), "comment": "Docker " + name})
+    out.append({"id": "default", "src": "fixed", "action": "drop" if c["enabled"] else "accept", "proto": "any",
+                "comment": "alles andere" + (" verwerfen" if c["enabled"] else " (Firewall aus)")})
+    return out
+
+
+def _fw_lines(rules, fam, enabled):
+    lines = ["*filter", ":%s - [0:0]" % FW_CHAIN]
+    if not enabled:
+        lines += ["-A %s -m comment --comment nd:off -j RETURN" % FW_CHAIN, "COMMIT"]
+        return lines
+    for r in rules:
+        if r.get("enabled") is False:
+            continue
+        rf = r.get("family") or "both"
+        if rf != "both" and rf != fam:
+            continue
+        src = r.get("source") or ""
+        if src and str(ipaddress.ip_network(src).version) != fam:
+            continue
+        tgt = "ACCEPT" if r["action"] == "accept" else "DROP"
+        tag = "-m comment --comment nd:%s" % r["id"]
+        s_ = (" -s " + src) if src else ""
+        icmp = "icmp" if fam == "4" else "ipv6-icmp"
+        if r["id"] == "est":
+            lines.append("-A %s -m conntrack --ctstate ESTABLISHED,RELATED %s -j ACCEPT" % (FW_CHAIN, tag))
+            lines.append("-A %s -m conntrack --ctstate INVALID -m comment --comment nd:invalid -j DROP" % FW_CHAIN)
+            continue
+        if r["proto"] == "ping":
+            t = "--icmp-type echo-request" if fam == "4" else "--icmpv6-type echo-request"
+            lines.append("-A %s -p %s -m %s %s %s -j %s" % (FW_CHAIN, icmp, icmp if fam == "4" else "icmp6", t, tag, tgt))
+            continue
+        if r["proto"] == "icmp":
+            if r.get("noping"):   # everything except echo-request (decided by the ping rule)
+                t = "--icmp-type echo-request" if fam == "4" else "--icmpv6-type echo-request"
+                lines.append("-A %s -p %s -m %s ! %s%s %s -j %s" % (FW_CHAIN, icmp, icmp if fam == "4" else "icmp6", t, s_, tag, tgt))
+            else:
+                lines.append("-A %s -p %s%s %s -j %s" % (FW_CHAIN, icmp, s_, tag, tgt))
+            continue
+        protos = ["tcp", "udp"] if r["proto"] == "tcpudp" else [r["proto"]] if r["proto"] in ("tcp", "udp") else [None]
+        for pr in protos:
+            m = ""
+            if pr:
+                m = " -p " + pr
+                if r.get("port"):
+                    m += " -m conntrack --ctorigdstport " + str(r["port"]).replace("-", ":")
+            lines.append("-A %s%s%s %s -j %s" % (FW_CHAIN, m, s_, tag, tgt))
+    lines.append("COMMIT")
+    return lines
+
+
+def _hook(tool, chain, spec):
+    if subprocess.run([tool, "-w", "5", "-C", chain] + spec, capture_output=True).returncode != 0:
+        sh(tool, "-w", "5", "-I", chain, "1", *spec)
+
+
+def fw_hooks():
+    """jumps into NETDASH-FW; DOCKER-USER is the place Docker leaves alone and evaluates first in FORWARD"""
+    if not WAN_IF:
+        raise RuntimeError("öffentliches Interface unbekannt (wan_if in config.json setzen)")
+    for tool in ("iptables", "ip6tables"):
+        if subprocess.run([tool, "-w", "5", "-S", FW_CHAIN], capture_output=True).returncode != 0:
+            sh(tool, "-w", "5", "-N", FW_CHAIN)
+        _hook(tool, "INPUT", ["-i", WAN_IF, "-j", FW_CHAIN])
+    fwd = "FORWARD"
+    if shutil.which("docker"):
+        if subprocess.run(["iptables", "-w", "5", "-S", "DOCKER-USER"], capture_output=True).returncode != 0:
+            sh("iptables", "-w", "5", "-N", "DOCKER-USER")   # Docker keeps an existing DOCKER-USER chain
+            sh("iptables", "-w", "5", "-A", "DOCKER-USER", "-j", "RETURN")
+        fwd = "DOCKER-USER"
+    _hook("iptables", fwd, ["-i", WAN_IF, "-m", "conntrack", "--ctstate", "DNAT", "-j", FW_CHAIN])
+
+
+def fw_render(c=None):
+    c = c or fw_load()
+    eff = fw_effective(c)
+    fw_hooks()
+    for fam, tool in (("4", "iptables-restore"), ("6", "ip6tables-restore")):
+        # --noflush: only NETDASH-FW is replaced, every other chain stays as it is
+        sh(tool, "-w", "5", "--noflush", inp="\n".join(_fw_lines(eff, fam, c["enabled"])) + "\n")
+    return eff
+
+
+def fw_refresh():
+    """automatic rules follow WireGuard tunnels and port forwards: re-render after those change"""
+    try:
+        if os.path.exists(FW_CONF) or os.path.exists(FW_PENDING):
+            fw_render()
+    except Exception as e:
+        sys.stderr.write("firewall refresh: %s\n" % e)
+
+
+def fw_counters():
+    out = {}
+    for tool in ("iptables", "ip6tables"):
+        for line in sh(tool, "-w", "5", "-L", FW_CHAIN, "-v", "-x", "-n", check=False).splitlines()[2:]:
+            m = re.search(r"/\* nd:(\S+) \*/", line)
+            p = line.split()
+            if m and len(p) > 2 and p[0].isdigit():
+                c = out.setdefault(m.group(1), [0, 0])
+                c[0] += int(p[0]); c[1] += int(p[1])
+    return out
+
+
+def public_listeners():
+    """[(proto, port, process)] reachable on the public address (not bound to loopback or a tunnel address)"""
+    out = {}
+    for line in sh("ss", "-tulnpH", check=False).splitlines():
+        p = line.split()
+        if len(p) < 5:
+            continue
+        addr, _, port = p[4].rpartition(":")
+        if not port.isdigit() or addr.startswith(("127.", "[::1]")) or "%lo" in addr:
+            continue
+        a = addr.strip("[]").split("%")[0]
+        if a not in ("0.0.0.0", "::", "*", WAN_IP) and not a.startswith("2") and "%" + WAN_IF not in addr:
+            continue   # bound to a tunnel or Docker address only
+        m = re.search(r'"([^"]+)"', line)
+        out.setdefault((p[0], int(port)), m.group(1) if m else ("WireGuard (Kernel)" if p[0] == "udp" else ""))
+    return sorted(out.items())
+
+
+def _verdict(eff, proto, port, enabled):
+    if not enabled:
+        return "open", "Firewall aus"
+    for r in eff:
+        if r["id"] in ("est",) or r.get("enabled") is False or r["proto"] in ("icmp", "ping"):
+            continue
+        if r["proto"] not in (proto, "tcpudp", "any"):
+            continue
+        if r.get("port"):
+            a, _, b = str(r["port"]).partition("-")
+            if not int(a) <= port <= int(b or a):
+                continue
+        if r.get("source"):
+            if r["action"] == "accept":
+                return "limited", "nur von %s (%s)" % (r["source"], r.get("comment") or "eigene Regel")
+            continue
+        return ("open" if r["action"] == "accept" else "blocked"), r.get("comment") or r["id"]
+    return "blocked", "alles andere verwerfen"
+
+
+def cmd_fw_status():
+    c = fw_load()
+    eff = fw_effective(c)
+    cnt = fw_counters()
+    for r in eff:
+        k = cnt.get(r["id"])
+        r["packets"], r["bytes"] = (k[0], k[1]) if k else (None, None)
+    hooked = subprocess.run(["iptables", "-w", "5", "-C", "INPUT", "-i", WAN_IF, "-j", FW_CHAIN], capture_output=True).returncode == 0
+    if os.path.exists(FW_CONF) or os.path.exists(FW_PENDING):
+        want = "\n".join(l for l in _fw_lines(eff, "4", c["enabled"]) if l.startswith("-A"))
+        have = "\n".join(l for l in sh("iptables", "-w", "5", "-S", FW_CHAIN, check=False).splitlines() if l.startswith("-A"))
+        if not hooked or _norm_rules(want) != _norm_rules(have):
+            # rules lost (iptables flushed) or out of date (new tunnel port, Docker container): load them again
+            fw_render(c)
+            cnt, hooked = fw_counters(), True
+            for r in eff:
+                k = cnt.get(r["id"])
+                r["packets"], r["bytes"] = (k[0], k[1]) if k else (None, None)
+    lst = [{"proto": pr, "port": po, "process": proc, "state": v[0], "why": v[1]}
+           for (pr, po), proc in public_listeners() for v in [_verdict(eff, pr, po, c["enabled"])]]
+    timer = subprocess.run(["systemctl", "is-active", FW_TIMER + ".timer"], capture_output=True, text=True).stdout.strip()
+    print(json.dumps({"config": c, "effective": eff, "listeners": lst, "pending": os.path.exists(FW_PENDING),
+                      "timer": timer, "active": hooked, "wan_if": WAN_IF, "wan_ip": WAN_IP,
+                      "file": FW_CONF, "time": int(time.time())}))
+
+
+def _norm_rules(text):
+    """the rule ids in order: iptables -S writes options in its own order, the ids are enough to see a change"""
+    return re.findall(r"nd:(\S+)", text)
+
+
+def cmd_fw_refresh():
+    fw_refresh()
+    print(json.dumps({"ok": True}))
+
+
+def cmd_fw_apply():
+    c = fw_validate(json.loads(sys.stdin.read() or "{}"))
+    save(FW_PENDING, c)
+    try:
+        fw_render(c)
+    except Exception:
+        os.remove(FW_PENDING)
+        fw_refresh()
+        raise
+    subprocess.run(["systemctl", "stop", FW_TIMER + ".timer"], capture_output=True)
+    sh("systemd-run", "--unit", FW_TIMER, "--on-active=%ds" % DEADMAN, "--timer-property=AccuracySec=1s",
+       "/usr/local/sbin/netdash-vps", "fw-rollback", check=False)
+    print(json.dumps({"ok": True, "deadman": DEADMAN}))
+
+
+def cmd_fw_confirm():
+    if os.path.exists(FW_PENDING):
+        os.replace(FW_PENDING, FW_CONF)
+    subprocess.run(["systemctl", "stop", FW_TIMER + ".timer"], capture_output=True)
+    print(json.dumps({"ok": True}))
+
+
+def cmd_fw_rollback():
+    if os.path.exists(FW_PENDING):
+        os.remove(FW_PENDING)
+    if os.path.exists(FW_CONF):
+        fw_render()
+    else:   # never confirmed: back to no filtering at all
+        fw_render(json.loads(json.dumps(FW_DEFAULT)))
+    subprocess.run(["systemctl", "stop", FW_TIMER + ".timer"], capture_output=True)
+    print(json.dumps({"ok": True}))
 
 
 def cmd_test(host, port):
@@ -272,6 +670,7 @@ def wg_confs():
                 if k in ("PrivateKey", "PresharedKey", "PostUp", "PostDown", "PreUp", "PreDown"):
                     if k.startswith(("Post", "Pre")):
                         cur["hooks"] = cur.get("hooks", 0) + 1
+                        cur.setdefault("hook_lines", []).append("%s = %s" % (k, v.strip()))
                     continue
                 cur[k] = v.strip()
         out[name] = {"iface": iface, "peers": peers}
@@ -311,7 +710,8 @@ def cmd_wg():
         out.append({"name": name, "active": r is not None, "autostart": systemd_state(name), "created": _created_here(name),
                     "has_client": os.path.exists(os.path.join(CLIENT_DIR, name + ".conf")),
                     "address": c["iface"].get("Address"), "port": c["iface"].get("ListenPort"),
-                    "pub": (r or {}).get("pub"), "hooks": c["iface"].get("hooks", 0), "peers": peers})
+                    "pub": (r or {}).get("pub"), "hooks": c["iface"].get("hooks", 0),
+                    "hook_lines": c["iface"].get("hook_lines", []), "peers": peers})
     print(json.dumps({"tunnels": out, "time": int(time.time()),
                       "defaults": {"home_routes": HOME_ROUTES, "dns": CFG["dns"], "tun_net": str(TUN_NET),
                                    "ports": "%d-%d" % (PORTS.start, PORTS.stop - 1)}}))
@@ -477,6 +877,155 @@ def cmd_wg_delete(name):
     print(json.dumps({"ok": True}))
 
 
+def _sections(text):
+    """config text -> (lines before the first section, [{"head", "lead": comment lines above it, "body"}])"""
+    pre, secs, cur = [], [], None
+    for line in text.splitlines():
+        if line.strip() in ("[Interface]", "[Peer]"):
+            src = cur["body"] if cur else pre
+            lead = []
+            while src and src[-1].strip().startswith("#"):
+                lead.insert(0, src.pop())
+            cur = {"head": line.strip(), "lead": lead, "body": []}
+            secs.append(cur)
+        elif cur is None:
+            pre.append(line)
+        else:
+            cur["body"].append(line)
+    return pre, secs
+
+
+def _key_of(line):
+    s = line.strip()
+    return s.split("=", 1)[0].strip() if "=" in s and not s.startswith("#") else None
+
+
+def _set(body, key, val):
+    idx = [i for i, ln in enumerate(body) if _key_of(ln) == key]
+    for i in reversed(idx[1:] if val else idx):
+        del body[i]
+    if not val:
+        return
+    if idx:
+        body[idx[0]] = "%s = %s" % (key, val)
+    else:
+        last = max([i for i, ln in enumerate(body) if ln.strip()] or [-1])
+        body.insert(last + 1, "%s = %s" % (key, val))
+
+
+def _nets(v, what, iface=False):
+    out = []
+    for part in str(v or "").replace("\n", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(str(ipaddress.ip_interface(part)) if iface else str(ipaddress.ip_network(part, strict=False)))
+        except ValueError:
+            raise ValueError("%s: %s ist keine gültige Adresse" % (what, part))
+    return ", ".join(out)
+
+
+def cmd_wg_edit(name):
+    _wg_check(name)
+    ch = json.loads(sys.stdin.read() or "{}")
+    path = os.path.join(WG_DIR, name + ".conf")
+    text = open(path).read()
+    pre, secs = _sections(text)
+    iface = next((x for x in secs if x["head"] == "[Interface]"), None)
+    if not iface:
+        raise ValueError("%s hat keinen [Interface]-Abschnitt" % name)
+    confs, rt = wg_confs(), wg_runtime()
+    if "address" in ch:
+        addr = _nets(ch["address"], "Adresse", iface=True)
+        if not addr:
+            raise ValueError("Adresse fehlt")
+        _set(iface["body"], "Address", addr)
+    if "port" in ch:
+        port = str(ch["port"] or "").strip()
+        if port and not (port.isdigit() and 1 <= int(port) <= 65535):
+            raise ValueError("Port: 1 bis 65535")
+        _set(iface["body"], "ListenPort", port)
+    for pc in ch.get("peers") or []:
+        sec = next((x for x in secs if x["head"] == "[Peer]" and
+                    any(_key_of(ln) == "PublicKey" and ln.split("=", 1)[1].strip() == pc.get("pub") for ln in x["body"])), None)
+        if not sec:
+            raise ValueError("Peer %s… gibt es nicht mehr" % str(pc.get("pub"))[:8])
+        if "comment" in pc:
+            c = re.sub(r"[\r\n]+", " ", str(pc["comment"] or "")).strip()[:60]
+            if sec["lead"] and not sec["lead"][-1].startswith(MARK):
+                sec["lead"].pop()
+            if c:
+                sec["lead"].append("# " + c)
+        if "allowed" in pc:
+            allowed = _nets(pc["allowed"], "AllowedIPs")
+            if not allowed:
+                raise ValueError("AllowedIPs darf nicht leer sein")
+            _set(sec["body"], "AllowedIPs", allowed)
+        if "keepalive" in pc:
+            ka = str(pc["keepalive"] or "").strip()
+            if ka and not (ka.isdigit() and int(ka) <= 65535):
+                raise ValueError("Keepalive: Sekunden, 0 bis 65535")
+            _set(sec["body"], "PersistentKeepalive", "" if ka in ("", "0") else ka)
+    out = pre + [ln for x in secs for ln in x["lead"] + [x["head"]] + x["body"]]
+    new = "\n".join(out).rstrip("\n") + "\n"
+    if new == text:
+        print(json.dumps({"ok": True, "changed": False}))
+        return
+    # an active tunnel must not take the port or address of another active one
+    me = {}
+    for ln in new.splitlines():
+        k = _key_of(ln)
+        if k in ("ListenPort", "Address") and k not in me:
+            me[k] = ln.split("=", 1)[1].strip()
+    if name in rt:
+        for other, c in confs.items():
+            if other == name or other not in rt:
+                continue
+            if me.get("ListenPort") and me["ListenPort"] == (c["iface"].get("ListenPort") or "").strip():
+                raise ValueError("Port %s nutzt schon der aktive Tunnel %s" % (me["ListenPort"], other))
+            if me.get("Address") and me["Address"] == c["iface"].get("Address"):
+                raise ValueError("Adresse %s nutzt schon der aktive Tunnel %s" % (me["Address"], other))
+    arch = os.path.join(WG_DIR, "archiv")
+    os.makedirs(arch, exist_ok=True)
+    backup = os.path.join(arch, "%s.conf.%s-edit" % (name, time.strftime("%Y%m%d-%H%M%S")))
+    old = os.umask(0o077)
+    try:
+        with open(backup, "w") as f:
+            f.write(text)
+        # wg-quick only parses files named <interface>.conf: check a copy in a private temp dir
+        tdir = tempfile.mkdtemp(prefix="netdash-wg-")
+        try:
+            tmp = os.path.join(tdir, name + ".conf")
+            with open(tmp, "w") as f:
+                f.write(new)
+            p = subprocess.run(["wg-quick", "strip", tmp], capture_output=True, text=True)
+        finally:
+            shutil.rmtree(tdir, ignore_errors=True)
+        if p.returncode != 0:
+            raise ValueError("Konfiguration ungültig: %s" % (p.stderr or p.stdout).strip()[:200])
+        with open(path, "w") as f:   # in place: keeps owner and mode
+            f.write(new)
+    finally:
+        os.umask(old)
+    restarted = False
+    if name in rt:
+        def restart():
+            subprocess.run(["systemctl", "stop", "wg-quick@" + name], capture_output=True)
+            if wg_runtime().get(name):
+                subprocess.run(["wg-quick", "down", name], capture_output=True)
+            return subprocess.run(["systemctl", "start", "wg-quick@" + name], capture_output=True, text=True)
+        p = restart()
+        if p.returncode != 0:
+            err = (p.stderr or p.stdout).strip()
+            with open(path, "w") as f:   # keeps the file mode (600)
+                f.write(text)
+            restart()
+            raise RuntimeError("Tunnel startet mit der neuen Konfiguration nicht, alte wiederhergestellt: %s" % err[:200])
+        restarted = True
+    print(json.dumps({"ok": True, "changed": True, "restarted": restarted, "backup": backup}))
+
+
 def cmd_ifaces():
     links = json.loads(sh("ip", "-j", "-s", "addr", "show"))
     nets = {}
@@ -541,16 +1090,32 @@ def main(argv):
             cmd_wg()
         elif c == "wg-up" and len(rest) == 1:
             cmd_wg_up(rest[0])
+            fw_refresh()
         elif c == "wg-down" and len(rest) == 1:
             cmd_wg_down(rest[0])
         elif c == "wg-autostart" and len(rest) == 2 and rest[1] in ("on", "off"):
             cmd_wg_autostart(*rest)
         elif c == "wg-create" and len(rest) == 3 and rest[1] in ("home", "all") and rest[2] in ("adguard", "none"):
             cmd_wg_create(*rest)
+            fw_refresh()
         elif c == "wg-config" and len(rest) == 1:
             cmd_wg_config(rest[0])
         elif c == "wg-delete" and len(rest) == 1:
             cmd_wg_delete(rest[0])
+            fw_refresh()
+        elif c == "wg-edit" and len(rest) == 1:
+            cmd_wg_edit(rest[0])
+            fw_refresh()
+        elif c == "fw-status":
+            cmd_fw_status()
+        elif c == "fw-apply":
+            cmd_fw_apply()
+        elif c == "fw-refresh":
+            cmd_fw_refresh()
+        elif c == "fw-confirm":
+            cmd_fw_confirm()
+        elif c == "fw-rollback":
+            cmd_fw_rollback()
         else:
             print(json.dumps({"error": "unknown command"}))
             return 2

@@ -68,8 +68,8 @@ export default function Forwards({ full }: { full: Full }) {
       </Card>
       <div className="dim" style={{ fontSize: 12.5, lineHeight: 1.6 }}>
         Der VPS leitet Verbindungen an seine öffentliche Adresse über den VPN-Tunnel ins Heimnetz weiter (iptables-Kette NETDASH-PF,
-        Liste auf dem VPS in {v?.forwards_file || '/etc/netdash-vps/forwards.json'}). Neue Ports gegebenenfalls zusätzlich in der Firewall
-        deines VPS-Anbieters freigeben. Ports, die der VPS selbst nutzt, sind gesperrt.
+        Liste auf dem VPS in {v?.forwards_file || '/etc/netdash-vps/forwards.json'}). {v?.fw?.config?.enabled && v.fw.config.auto?.forwards
+          ? 'Die Firewall-VPS gibt aktive Weiterleitungen automatisch frei.' : 'Neue Ports gegebenenfalls in der Firewall-VPS bzw. beim VPS-Anbieter freigeben.'} Ports, die der VPS selbst nutzt, sind gesperrt.
         {v?.history?.[0] && <> · Zuletzt: {v.history[0].what} {ago(v.history[0].t)}</>}
       </div>
       {edit && <FwdEditor f={edit.f} full={full} busy={busy} err={err} onClose={() => { setEdit(null); setErr('') }}

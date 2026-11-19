@@ -7,7 +7,18 @@ Tailscale, …), netdash can manage it from the **Portfreigaben**, **VPN** and *
   applied, checked and rolled back after 60 s unless netdash confirms that the VPS still answers.
 - **WireGuard road-warrior tunnels**: list, start/stop, autostart, create a new tunnel with a name (next free /30 and
   port, keys and preshared key are generated) and get the client config as file and QR code.
+- **Edit any tunnel**, also ones made by hand: address, port, and per peer a label, AllowedIPs and keepalive. Keys
+  and PostUp/PostDown stay untouched, the old config goes to `/etc/wireguard/archiv`, an active tunnel is restarted
+  and gets its old config back if it does not come up.
 - **Interfaces** with live rates.
+- **Firewall** for everything arriving on the public interface (IPv4 and IPv6), page **Firewall-VPS**: own chain
+  `NETDASH-FW`, jumped from `INPUT` (services on the VPS) and `DOCKER-USER` (Docker published ports and the port
+  forwards, matched on the original destination port). Always open: SSH, DHCP, established connections. Automatically
+  open (switchable): WireGuard ports, port forwards, Docker published ports; they follow new tunnels, forwards and
+  containers. Own allow/drop rules by protocol, port (range), source and IP version. Every change is applied, checked
+  over a new SSH connection and rolled back after 60 s unless confirmed. Settings in `<dir>/firewall.json`; `boot`
+  loads it and again after 60 and 180 s (Docker, WireGuard and NetBird start later). Tunnels and Docker networks are
+  not filtered. With it running, the provider's firewall can be set to allow everything.
 
 The helper is one Python 3 file without dependencies. It needs `iptables`, `ip`, `wg`/`wg-quick` and systemd
 (tested on Debian 12/13).
