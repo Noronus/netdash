@@ -1,27 +1,17 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useRef } from 'react'
 import { Maximize, Minus, Plus } from 'lucide-react'
-
-export function useMedia(query: string) {
-  const [m, setM] = useState(() => matchMedia(query).matches)
-  useEffect(() => {
-    const l = matchMedia(query)
-    const f = () => setM(l.matches)
-    l.addEventListener('change', f)
-    return () => l.removeEventListener('change', f)
-  }, [query])
-  return m
-}
 
 type Pt = { x: number; y: number }
 const MAX = 2.5
 const DRAG = 6 // px before a touch counts as dragging instead of a tap
 
 /**
- * Shows its content at a fixed desktop width, like a picture: drag to move, pinch (or ctrl + wheel) to zoom, taps still
- * reach the content. Fills the window height below its top edge. Starts fitted to the width and keeps fitting on resize
- * until the user moves it.
+ * Shows its content like a map: drag to move, pinch (or ctrl + wheel) to zoom, wheel / two-finger scroll moves, taps and
+ * clicks still reach the content. The content is laid out at the box width but never narrower than `minWidth`, so on
+ * small windows and phones it keeps the wide layout and is shown scaled down instead of wrapping. Fills the window
+ * height below its top edge. Starts fitted to the width and keeps fitting on resize until the user moves it.
  */
-export default function PanZoom({ width, children }: { width: number; children: React.ReactNode }) {
+export default function PanZoom({ minWidth, children }: { minWidth: number; children: React.ReactNode }) {
   const outer = useRef<HTMLDivElement>(null)
   const inner = useRef<HTMLDivElement>(null)
   const v = useRef({ x: 0, y: 0, s: 1 })
@@ -29,15 +19,16 @@ export default function PanZoom({ width, children }: { width: number; children: 
   const pts = useRef(new Map<number, Pt>())
   const g = useRef({ moved: false, start: { x: 0, y: 0 }, dist: 0, mid: { x: 0, y: 0 } })
   const swallowClick = useRef(false)
+  const width = useRef(minWidth) // layout width of the content
 
-  const fitScale = () => Math.min(1, (outer.current?.clientWidth || width) / width)
+  const fitScale = () => Math.min(1, (outer.current?.clientWidth || width.current) / width.current)
   const minScale = () => fitScale() * 0.75
 
   const apply = () => {
     const o = outer.current, i = inner.current
     if (!o || !i) return
     const c = v.current
-    const cw = o.clientWidth, ch = o.clientHeight, w = width * c.s, h = i.offsetHeight * c.s, m = 48
+    const cw = o.clientWidth, ch = o.clientHeight, w = width.current * c.s, h = i.offsetHeight * c.s, m = 48
     c.x = w <= cw ? (cw - w) / 2 : Math.min(m, Math.max(cw - w - m, c.x))
     c.y = h <= ch ? Math.min(m, Math.max(0, c.y)) : Math.min(m, Math.max(ch - h - m, c.y))
     i.style.transform = `translate(${c.x}px, ${c.y}px) scale(${c.s})`
@@ -72,15 +63,24 @@ export default function PanZoom({ width, children }: { width: number; children: 
       const content = o.closest('.content')
       const pad = content ? parseFloat(getComputedStyle(content).paddingBottom) || 0 : 16
       o.style.height = Math.max(280, window.innerHeight - top - pad) + 'px'
+      relayout()
+    }
+    // content width follows the box (sidebar, window), content height follows the content (expanded lists)
+    const relayout = () => {
+      const o = outer.current, i = inner.current
+      if (!o || !i) return
+      const w = Math.max(minWidth, o.clientWidth)
+      if (w !== width.current || !i.style.width) { width.current = w; i.style.width = w + 'px' }
       if (fitted.current) fit()
       else apply()
     }
     size()
     window.addEventListener('resize', size)
-    const ro = new ResizeObserver(() => (fitted.current ? fit() : apply()))
+    const ro = new ResizeObserver(relayout)
+    if (outer.current) ro.observe(outer.current)
     if (inner.current) ro.observe(inner.current)
     return () => { window.removeEventListener('resize', size); ro.disconnect() }
-  }, [width])
+  }, [minWidth])
 
   useEffect(() => {
     const o = outer.current
@@ -155,7 +155,7 @@ export default function PanZoom({ width, children }: { width: number; children: 
 
   return (
     <div ref={outer} className="pz" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}>
-      <div ref={inner} className="pz-in" style={{ width }}>{children}</div>
+      <div ref={inner} className="pz-in">{children}</div>
       <div className="pz-ctl">
         <button title="Vergrößern" onClick={() => zoomAt(center(), v.current.s * 1.4)}><Plus size={17} /></button>
         <button title="Verkleinern" onClick={() => zoomAt(center(), v.current.s / 1.4)}><Minus size={17} /></button>
