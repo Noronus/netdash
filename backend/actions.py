@@ -3,6 +3,7 @@ import ipaddress
 import re
 import subprocess
 import threading
+import time
 
 BLOCK_ALIAS = "netdash_blocked"
 PRIVATE_ALIAS = "netdash_private"
@@ -60,6 +61,36 @@ class Actions:
             raise ValueError("Netz des Geräts unbekannt, Wake-on-LAN braucht das Interface")
         r = self.opn.post("/api/wol/wol/set", {"wake": {"interface": info["ifname"], "mac": d["mac"]}})
         return {"ok": True, "interface": info["descr"], "result": r}
+
+    # ------------------------------------------------------------ ping
+    def ping(self, mac):
+        """is the device there right now? 3 pings to each of its addresses until one answers"""
+        d = self._device(mac)
+        ips = []
+        for ip in [d.get("ip")] + (d.get("ipv4") or []) + [x for x in d.get("ipv6") or [] if not x.lower().startswith("fe80")]:
+            if ip and ip not in ips:
+                ips.append(ip)
+        if not ips:
+            raise ValueError("Keine IP-Adresse bekannt")
+        tried = []
+        for ip in ips[:4]:
+            v6 = ":" in ip
+            try:
+                p = subprocess.run(["ping", "-6" if v6 else "-4", "-c", "3", "-i", "0.3", "-W", "1000", ip],
+                                   capture_output=True, text=True, timeout=8)
+                out = p.stdout
+            except subprocess.TimeoutExpired:
+                out = ""
+            m = re.search(r"(\d+) packets transmitted, (\d+) packets received", out)
+            rtt = re.search(r"= [\d.]+/([\d.]+)/", out)
+            r = {"ip": ip, "sent": int(m.group(1)) if m else 3, "received": int(m.group(2)) if m else 0,
+                 "ms": float(rtt.group(1)) if rtt else None}
+            tried.append(r)
+            if r["received"]:
+                # an answer is a sign of life like traffic: the device counts as online again
+                self.app.devices.activity[d["mac"]] = time.time()
+                return {"ok": True, **r, "tried": tried}
+        return {"ok": False, **tried[0], "tried": tried}
 
     # ------------------------------------------------------------ static dhcp (dnsmasq)
     def _hosts(self):

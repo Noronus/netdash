@@ -1,10 +1,11 @@
-import React from 'react'
-import { Activity, Cpu, Globe, HardDrive, MonitorSmartphone, Network, ShieldCheck, Waypoints } from 'lucide-react'
-import { Full } from '../api'
+import React, { useState } from 'react'
+import { Activity, ArrowUpCircle, Cpu, Globe, HardDrive, MonitorSmartphone, Network, ShieldCheck, Waypoints } from 'lucide-react'
+import { api, Full } from '../api'
 import { go, openDevice, wanRates } from '../App'
 import { AreaChart, Donut, Sparkline } from '../components/charts'
 import { Badge, Card, DevIcon, Dot, Meter, Rate, SrcError } from '../components/ui'
 import DomainList from '../components/DomainList'
+import { deviceOf, UpdateRow } from '../components/Updates'
 import { vpnPeers } from './Networks'
 import { bytes, dur, num, pct, rate, rateShort, tone } from '../format'
 
@@ -190,6 +191,36 @@ export default function Overview({ full, ifHist }: { full: Full; ifHist: Record<
           {full.dns_top ? <DomainList rows={full.dns_top.blocked.slice(0, 7)} bad /> : <div className="card-b"><SrcError src={full.sources.adguard} label="AdGuard" /></div>}
         </Card>
       </div>
+      <Updates full={full} />
     </>
+  )
+}
+
+function Updates({ full }: { full: Full }) {
+  const [busy, setBusy] = useState('')
+  const items = full.updates || []
+  if (!items.length) return null
+  const n = items.filter((u) => u.update).length
+  const check = async () => {
+    setBusy('läuft …')
+    try { await api('/api/updates/check', { method: 'POST', body: '{}' }); setBusy('Prüfung gestartet, OPNsense braucht etwa eine Minute') }
+    catch (e: any) { setBusy('Fehler: ' + e.message) }
+  }
+  return (
+    <div className="grid">
+      <Card className="c12" title="Updates" icon={<ArrowUpCircle size={16} />}
+        act={<div className="row gap6">
+          {busy && <span className="dim" style={{ fontSize: 12 }}>{busy}</span>}
+          <Badge t={n ? 'warn' : 'ok'}>{n ? `${n} verfügbar` : 'alles aktuell'}</Badge>
+          <button className="btn sm" onClick={check}>Jetzt prüfen</button>
+        </div>}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 8 }}>
+          {items.map((u) => {
+            const d = deviceOf(full, u)
+            return <UpdateRow key={u.id} u={u} onClick={d ? () => openDevice(d.mac) : u.own ? () => go('servers') : undefined} />
+          })}
+        </div>
+      </Card>
+    </div>
   )
 }

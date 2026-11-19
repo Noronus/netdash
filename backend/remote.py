@@ -494,6 +494,18 @@ class UniFi:
                                  opener=self.opener, timeout=15)
             raise
 
+    def system(self):
+        """UniFi OS itself (not the Network app): versions of the OS and its apps, latest firmware"""
+        if not self.logged_in:
+            self._login()
+        try:
+            return http_json(self.base + "/api/system", headers={"X-CSRF-Token": self.csrf or ""}, opener=self.opener, timeout=15)
+        except urllib.error.HTTPError as e:
+            if e.code not in (401, 403):
+                raise
+            self._login()
+            return http_json(self.base + "/api/system", headers={"X-CSRF-Token": self.csrf or ""}, opener=self.opener, timeout=15)
+
     # ---- settings
     def wlans(self, with_pass=False):
         out = []
@@ -583,7 +595,7 @@ class UniFi:
                 "type": d.get("type"), "state": d.get("state"), "ip": d.get("ip"), "version": d.get("version"),
                 "uptime": d.get("uptime"), "clients": d.get("num_sta"),
                 "cpu": (d.get("system-stats") or {}).get("cpu"), "mem": (d.get("system-stats") or {}).get("mem"),
-                "upgradable": d.get("upgradable"), "satisfaction": d.get("satisfaction"),
+                "upgradable": d.get("upgradable"), "upgrade_to": d.get("upgrade_to_firmware"), "satisfaction": d.get("satisfaction"),
                 "radios": [{"radio": r.get("radio"), "channel": r.get("channel"), "cu": r.get("cu_total"),
                             "clients": r.get("num_sta"), "tx_power": r.get("tx_power")}
                            for r in d.get("radio_table_stats") or []],
@@ -605,6 +617,7 @@ class UniFi:
 UNRAID_Q = """{
   metrics { cpu { percentTotal } memory { total used available percentTotal swapTotal swapUsed } }
   info { os { uptime hostname } cpu { brand cores threads } }
+  vars { version }
   array { state capacity { kilobytes { free used total } } disks { name size temp status fsSize fsUsed }
           caches { name size temp status fsSize fsUsed } }
   docker { containers { names state status autoStart image } }
@@ -678,6 +691,7 @@ class Unraid:
         self.state.put("unraid", {
             "ip": self.host(), "zfs": os.path.exists(UNRAID_ZFS_KEY),
             "hostname": d["info"]["os"]["hostname"], "boot": d["info"]["os"]["uptime"],
+            "version": (d.get("vars") or {}).get("version"),
             "cpu_model": d["info"]["cpu"]["brand"], "threads": d["info"]["cpu"]["threads"],
             "cpu": round(d["metrics"]["cpu"]["percentTotal"], 1),
             "mem": d["metrics"]["memory"],

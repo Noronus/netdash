@@ -23,6 +23,7 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import actions  # noqa: E402
+import updates  # noqa: E402
 import diag  # noqa: E402
 import firewall  # noqa: E402
 import gatuscfg  # noqa: E402
@@ -153,6 +154,7 @@ class App:
         self.vps.sink = self._vps_sink
         self.actions = actions.Actions(self)
         self.diag = diag.Diag(self)
+        self.updates = updates.Updates(self, log)
         self.totals = {"today": {}, "month": {}, "if_today": {}}
         self.full_cache = (0, None)
         self.fail_log = {}
@@ -210,6 +212,7 @@ class App:
         self.every("vps", 30, lambda: self.vps.collect(), 3, integ="vps")
         self.every("vps_if", 10, lambda: self.vps.collect_ifaces(), 6, integ="vps")
         self.every("blocksync", 60, lambda: self.actions.sync(), 40, integ="opnsense")
+        self.every("updates", 1800, lambda: self.updates.collect(), 90)
         self.every("flush", 30, self.flush, 30)
         self.every("totals", 60, self.compute_totals, 5)
         self.every("prune", 86400, self.db.prune, 600)
@@ -449,6 +452,7 @@ class App:
             "interfaces": ifaces,
             "devices": devices,
             "pf_states": tr.get("states"),
+            "updates": sec.get("updates"),
         }
 
     def switch_recollect(self):
@@ -813,6 +817,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.send_json({"error": "Fehler: %s" % e}, 500)
             log("service", body, "by", user)
             return self.send_json({"ok": True, "result": r})
+        if path == "/api/updates/check":
+            def run():
+                self.app.updates.collect(force=True)
+                time.sleep(60)   # the OPNsense check runs in the background, pick up its result
+                self.app.updates.collect()
+            threading.Thread(target=run, daemon=True).start()
+            return self.send_json({"ok": True})
+        m = re.fullmatch(r"/api/device/([0-9a-f:]{17})/ping", path)
+        if m:
+            try:
+                return self.send_json(self.app.actions.ping(m.group(1)))
+            except ValueError as e:
+                return self.send_json({"error": str(e)}, 400)
         m = re.fullmatch(r"/api/device/([0-9a-f:]{17})/(wol|static|block)", path)
         if m:
             body = self.read_json()

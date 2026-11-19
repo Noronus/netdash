@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react'
-import { Ban, Cable, Check, Database, Pencil, Pin, Power, X } from 'lucide-react'
+import { Ban, Cable, Check, Database, Pencil, Pin, Power, Radar, X } from 'lucide-react'
 import ZfsDialog from '../components/Zfs'
 import { api, Detail, Full, refreshState, saveDevice } from '../api'
 import { AreaChart, Bars } from '../components/charts'
 import DomainList from '../components/DomainList'
 import AttachCell from '../components/Attach'
 import AssignDialog from '../components/Assign'
+import { UpdateRow, updatesFor } from '../components/Updates'
 import { Badge, Card, DevIcon, ICONS, Rate, Seg, Signal } from '../components/ui'
 import { ago, bytes, clock, dateTime, day, num, radio, rate, since } from '../format'
 
@@ -33,6 +34,15 @@ export default function DeviceDrawer({ mac, full, onClose }: { mac: string; full
   const [busyAct, setBusyAct] = useState('')
   const [msg, setMsg] = useState('')
   const [staticForm, setStaticForm] = useState<{ ip: string; hostname: string } | null>(null)
+  const [pinging, setPinging] = useState(false)
+  const [pong, setPong] = useState<{ ok: boolean; ip: string; sent: number; received: number; ms: number | null; t: number; error?: string } | null>(null)
+  async function ping() {
+    setPinging(true); setPong(null)
+    try { setPong({ ...(await api<any>('/api/device/' + mac + '/ping', { method: 'POST', body: '{}' })), t: Date.now() }) }
+    catch (e: any) { setPong({ ok: false, ip: '', sent: 0, received: 0, ms: null, t: Date.now(), error: e.message }) }
+    finally { setPinging(false) }
+  }
+  useEffect(() => { setPong(null) }, [mac])
   async function act(what: string, body: any, ok: string) {
     setBusyAct(what); setMsg('')
     try { await api('/api/device/' + mac + '/' + what, { method: 'POST', body: JSON.stringify(body) }); await refreshState(); reload(); setMsg(ok); setStaticForm(null) }
@@ -57,6 +67,7 @@ export default function DeviceDrawer({ mac, full, onClose }: { mac: string; full
   if (!dev) return null
   const w = dev.wifi
   const live = det?.live || []
+  const upd = updatesFor(full, dev)
   return (
     <>
       <div className="scrim" onClick={onClose} />
@@ -74,6 +85,7 @@ export default function DeviceDrawer({ mac, full, onClose }: { mac: string; full
             <div className="row gap6 wrap">
               <Badge t={dev.online ? 'ok' : undefined}>{dev.online ? 'online' : 'offline'}</Badge>
               {dev.blocked && <Badge t="bad">kein Internet</Badge>}
+              {upd.some((u) => u.update) && <Badge t="warn">Update verfügbar</Badge>}
               {dev.link === 'wifi' && <Badge t="acc">WLAN</Badge>}
               {dev.link === 'wired' && <Badge>LAN</Badge>}
               {dev.network && <Badge>{dev.network}</Badge>}
@@ -111,6 +123,9 @@ export default function DeviceDrawer({ mac, full, onClose }: { mac: string; full
           {err && <div className="err">{err}</div>}
 
           <div className="row wrap" style={{ gap: 8 }}>
+            <button className="btn sm" disabled={pinging || (!dev.ip && !dev.ipv4.length && !dev.ipv6.length)} onClick={ping}
+              title="3 Pings an das Gerät, um zu sehen, ob es genau jetzt erreichbar ist (manche Handys antworten im Ruhezustand nicht)">
+              <Radar size={13} />{pinging ? 'Ping läuft …' : 'Ping'}</button>
             {isUnraid && <button className="btn sm primary" onClick={() => setZfs(true)}><Database size={13} />ZFS-Speicher</button>}
             <button className="btn sm" disabled={!!busyAct} onClick={() => act('wol', {}, 'Magic Packet gesendet.')}><Power size={13} />Aufwecken (WoL)</button>
             {dev.link !== 'wifi' && <button className="btn sm" onClick={() => setAssign(true)}><Cable size={13} />{dev.place ? 'Switch-Port ändern' : 'Switch-Port fest zuweisen'}</button>}
@@ -129,6 +144,14 @@ export default function DeviceDrawer({ mac, full, onClose }: { mac: string; full
             {busyAct && <span className="dim" style={{ fontSize: 12.5 }}>läuft …</span>}
             {msg && <span style={{ fontSize: 12.5, color: msg.startsWith('Fehler') ? 'var(--bad)' : 'var(--ok)' }}>{msg}</span>}
           </div>
+          {pong && (
+            <div className="row gap6" style={{ fontSize: 13, color: pong.ok ? 'var(--ok)' : 'var(--bad)' }}>
+              <span className={'dot ' + (pong.ok ? 'ok' : 'bad')} />
+              {pong.error ? 'Ping fehlgeschlagen: ' + pong.error
+                : pong.ok ? <span>antwortet · {pong.received}/{pong.sent} Pakete{pong.ms != null ? ` · ${pong.ms.toFixed(1).replace('.', ',')} ms` : ''} <span className="dim mono">{pong.ip}</span></span>
+                  : <span>keine Antwort · 0/{pong.sent} Pakete <span className="dim mono">{pong.ip}</span>{dev.online ? <span className="dim"> · blockt evtl. Ping oder schläft</span> : null}</span>}
+            </div>
+          )}
           {staticForm && (
             <div className="form">
               <div className="row" style={{ gap: 10 }}>
@@ -166,6 +189,12 @@ export default function DeviceDrawer({ mac, full, onClose }: { mac: string; full
                 data={slots(det?.days || [], 86400, 30, 'day').map((h) => ({ label: day(h.t).slice(4), title: day(h.t), a: h.down, b: h.up }))} />
             )}
           </Card>
+
+          {upd.length > 0 && (
+            <Card title="Firmware / Updates">
+              <div className="col" style={{ gap: 6 }}>{upd.map((u) => <UpdateRow key={u.id} u={u} />)}</div>
+            </Card>
+          )}
 
           {w && (
             <Card title="WLAN">

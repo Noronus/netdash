@@ -83,6 +83,13 @@ export type Full = {
   interfaces: Iface[]
   devices: Device[]
   pf_states?: number
+  updates?: UpdateItem[] | null
+}
+
+/** firmware / software update state of one infrastructure part (backend/updates.py); update null = unknown */
+export type UpdateItem = {
+  id: string; name: string; kind: string; current?: string | null; latest?: string | null; update: boolean | null
+  note?: string | null; mac?: string | null; ip?: string | null; checked?: number; error?: string | null; url?: string | null; own?: boolean
 }
 
 export type NbPeer = { name: string; fqdn: string; ip: string; status: string; type: string; latency_ms: number; rx: number; tx: number; handshake?: string | null; since?: string }

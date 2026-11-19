@@ -226,6 +226,14 @@ button { font: inherit; color: inherit; }
 /* ---------------------------------------------------------------- lists & tables */
 
 .list { display: flex; flex-direction: column; }
+/* update state rows (components/Updates.tsx) */
+.upd { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--border-soft); min-width: 0; }
+.upd.click { cursor: pointer; }
+.upd.click:hover { border-color: var(--border); }
+.upd-ic { flex: none; }
+.upd-ic.ok { color: var(--ok); }
+.upd-ic.warn { color: var(--warn); }
+.upd-ic.dim { color: var(--text-3); }
 .li { display: flex; align-items: center; gap: 12px; padding: 9px 16px; min-width: 0; border-top: 1px solid var(--border-soft); }
 .li:first-child { border-top: 0; }
 .li.click { cursor: pointer; }
