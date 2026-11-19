@@ -43,7 +43,8 @@ VERSION = "1.1.1"
 
 
 def load_conf():
-    """{"listen": "lan" | "0.0.0.0" | "127.0.0.1" | <ip>, "port": 8098, "tls": true}"""
+    """{"listen": "lan" | "0.0.0.0" | "127.0.0.1" | <ip>, "port": 8098, "tls": true,
+        "listen_also": [{"listen": "lan", "port": 8098, "tls": true}, ...]}  (extra addresses, e.g. LAN next to a proxy)"""
     c = {"listen": "lan", "port": 8098, "tls": True}
     try:
         with open(CONF_FILE) as f:
@@ -572,6 +573,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def client_ip(self):
+        # only the reverse proxy on this box may say who the client is, a direct client could fake the header
+        if self.client_address[0] not in ("127.0.0.1", "::1"):
+            return self.client_address[0]
         return self.headers.get("X-Real-IP") or (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip() \
             or self.client_address[0]
 
@@ -1124,13 +1128,18 @@ def main():
     Handler.app = app
     Handler.sessions = Sessions(app.db)
     conf = load_conf()
-    addr = (listen_addr(conf), int(conf["port"]))
-    srv = Server(addr, Handler)
-    if conf.get("tls"):
-        # handshake happens in the handler thread, so a slow client cannot block accept()
-        srv.socket = tls_context().wrap_socket(srv.socket, server_side=True, do_handshake_on_connect=False)
-    log("netdash %s listening on %s://%s:%d" % (VERSION, "https" if conf.get("tls") else "http", *addr))
-    srv.serve_forever()
+    servers = []
+    for lc in [conf] + [{"port": conf["port"], "tls": True, **x} for x in conf.get("listen_also") or [] if isinstance(x, dict)]:
+        addr = (listen_addr(lc), int(lc["port"]))
+        srv = Server(addr, Handler)
+        if lc.get("tls"):
+            # handshake happens in the handler thread, so a slow client cannot block accept()
+            srv.socket = tls_context().wrap_socket(srv.socket, server_side=True, do_handshake_on_connect=False)
+        log("netdash %s listening on %s://%s:%d" % (VERSION, "https" if lc.get("tls") else "http", *addr))
+        servers.append(srv)
+    for srv in servers[1:]:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    servers[0].serve_forever()
 
 
 if __name__ == "__main__":
