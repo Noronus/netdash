@@ -461,6 +461,9 @@ class UniFi:
                                                   urllib.request.HTTPCookieProcessor(self.jar))
         self.csrf = None
         self.logged_in = False
+        self._wifi = set()          # WiFi clients connected at the last poll
+        self._left = {}             # mac -> when that WiFi client disconnected
+        self._left_at = 0
 
     def enabled(self):
         return bool(self.cfg.get("user") and self.cfg.get("pass"))
@@ -560,6 +563,7 @@ class UniFi:
     def collect(self):
         if not self.enabled():
             self.state.fail("unifi", "not configured")
+            self.devices.wifi_left = {}
             return
         sta = self.call("/api/s/%s/stat/sta" % self.site).get("data", [])
         dev = self.call("/api/s/%s/stat/device" % self.site).get("data", [])
@@ -588,6 +592,25 @@ class UniFi:
             extra[mac] = {"online": True, "seen": c.get("last_seen") or t, "name": c.get("name"),
                           "hostname": c.get("hostname"), "vendor": c.get("oui") or None}
         self.devices.extra = extra
+        # when WiFi clients disconnected, so their lingering ARP entry (up to 20 min) does not keep them online.
+        # Just gone: now is close enough; alluser has the exact time and still knows it after a restart.
+        wifi = {m for m, c in clients.items() if not c["wired"]}
+        for m in self._wifi - set(clients):
+            self._left[m] = t
+        self._wifi = wifi
+        if t - self._left_at > 60:
+            self._left_at = t
+            try:
+                for c in self.call("/api/s/%s/stat/alluser" % self.site, "POST",
+                                   {"type": "all", "conn": "all", "within": 24}).get("data", []):
+                    mac = (c.get("mac") or "").lower()
+                    ts = c.get("disconnect_timestamp") or c.get("last_seen")
+                    if mac and ts and not c.get("is_wired"):
+                        self._left[mac] = max(self._left.get(mac, 0), ts)
+            except Exception:
+                pass
+        self._left = {m: ts for m, ts in self._left.items() if m not in clients and t - ts < 86400}
+        self.devices.wifi_left = dict(self._left)
         devices = []
         for d in dev:
             devices.append({

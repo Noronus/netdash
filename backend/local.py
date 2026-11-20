@@ -21,6 +21,7 @@ PRETTY = {"opnsense": "OPNsense", "unraid": "Unraid", "homeassistant": "Home Ass
 VM_PREFIX = {"52:54:00": "QEMU/KVM VM", "02:42:": "Docker", "00:15:5d": "Hyper-V VM", "00:50:56": "VMware VM",
              "00:0c:29": "VMware VM", "08:00:27": "VirtualBox VM"}
 ONLINE_GRACE = 600          # a device counts as gone after 10 min without any sign
+LEFT_SLACK = 60             # clock difference to UniFi: signs up to 1 min after a WiFi disconnect still count as old
 RATE_HISTORY = 150          # 2 s samples -> 5 min sparkline per device
 WAN_HISTORY = 450           # 2 s samples -> 15 min for interface charts
 
@@ -188,14 +189,16 @@ class Devices:
         self.mac_if = {}            # mac -> netif
         self.activity = {}          # mac -> last ts with pf traffic (set by Traffic)
         self.extra = {}             # mac -> dict from other sources (UniFi, AdGuard)
+        self.wifi_left = {}         # mac -> ts UniFi saw this WiFi client disconnect (not connected now)
+        self.arp_max_age = None
         self.own_macs = set()
         self.lock = threading.Lock()
         self.oui = {}
         self._load_oui()
         self.meta = {r[0]: {"name": r[1], "icon": r[2], "note": r[3], "first_seen": r[4], "last_seen": r[5],
                             "online_since": r[6], "last_ip": r[7], "last_if": r[8],
-                            "place": json.loads(r[9]) if r[9] else None, "last_name": r[10]}
-                     for r in db.q("SELECT mac,name,icon,note,first_seen,last_seen,online_since,last_ip,last_if,place,last_name FROM device")}
+                            "place": json.loads(r[9]) if r[9] else None, "last_name": r[10], "unifi_name": r[11]}
+                     for r in db.q("SELECT mac,name,icon,note,first_seen,last_seen,online_since,last_ip,last_if,place,last_name,unifi_name FROM device")}
 
     def _load_oui(self):
         try:
@@ -223,11 +226,11 @@ class Devices:
 
         stale_v6 = {}
 
-        def add(mac, ip, netif, src):
+        def add(mac, ip, netif, src, sign=0):
             mac = norm_mac(mac)
             if not mac or ip in self.ifaces.own_ips:
                 return
-            d = seen.setdefault(mac, {"v4": set(), "v6": set(), "netif": None, "src": set(), "ipif": {}})
+            d = seen.setdefault(mac, {"v4": set(), "v6": set(), "netif": None, "src": set(), "ipif": {}, "sign": 0})
             if ip:
                 (d["v6"] if ":" in ip else d["v4"]).add(ip)
                 if netif:
@@ -235,12 +238,20 @@ class Devices:
             if netif and not d["netif"]:
                 d["netif"] = netif
             d["src"].add(src)
+            d["sign"] = max(d["sign"], sign)
 
+        if self.arp_max_age is None:
+            try:
+                self.arp_max_age = int(run(["sysctl", "-n", "net.link.ether.inet.max_age"]).strip())
+            except ValueError:
+                self.arp_max_age = 1200
         for line in run(["arp", "-an"]).splitlines():
             m = re.match(r"\S+ \((\S+)\) at (\S+) on (\S+)(.*)", line)
             if not m or "incomplete" in m.group(2) or "permanent" in m.group(4):
                 continue
-            add(m.group(2), m.group(1), m.group(3), "arp")
+            # an entry lives max_age seconds after the device last answered: that is when it was last confirmed
+            e = re.search(r"expires in (\d+) seconds", m.group(4))
+            add(m.group(2), m.group(1), m.group(3), "arp", t - max(0, self.arp_max_age - int(e.group(1))) if e else 0)
         for line in run(["ndp", "-an"]).splitlines()[1:]:
             p = line.split()
             if len(p) < 5 or p[3] == "permanent" or p[1] in ("(incomplete)",):
@@ -250,7 +261,7 @@ class Devices:
                 continue
             # only live neighbours count as presence; S(tale) entries linger for many hours
             if p[4] in ("R", "D", "P"):
-                add(p[1], ip, p[2], "ndp")
+                add(p[1], ip, p[2], "ndp", t if p[4] == "R" else 0)
             else:
                 stale_v6.setdefault(norm_mac(p[1]), set()).add((ip, p[2]))
 
@@ -328,8 +339,16 @@ class Devices:
                     (v6 if ":" in ip else v4).add(ip)
             netif = (s and s["netif"]) or (h and h["netif"]) or meta.get("last_if")
             recent = max(self.activity.get(mac, 0), ex.get("seen", 0))
-            online = bool(s) or bool(ex.get("online")) or (t - recent) < ONLINE_GRACE
-            last_sign = t if online else max((h["last"] if h else 0), recent, meta.get("last_seen") or 0)
+            left = self.wifi_left.get(mac)
+            if left and not ex.get("online"):
+                # UniFi saw it leave the WiFi. The ARP entry lingers up to 20 min and traffic has a grace period,
+                # so only a sign of life from after that moment counts (e.g. it came back over another link)
+                after = left + LEFT_SLACK
+                online = bool(s and s["sign"] > after) or (recent > after and (t - recent) < ONLINE_GRACE)
+                last_sign = t if online else max(left, (h["last"] if h else 0), recent)
+            else:
+                online = bool(s) or bool(ex.get("online")) or (t - recent) < ONLINE_GRACE
+                last_sign = t if online else max((h["last"] if h else 0), recent, meta.get("last_seen") or 0)
             if not online and not (l or st or h or meta.get("name")):
                 continue
             first_seen = min(x for x in [meta.get("first_seen") or t, h["first"] if h else t] if x)
@@ -347,8 +366,10 @@ class Devices:
                 if ip in hints:
                     hint = hints[ip]
                     break
+            # UniFi lists only connected clients (and nothing right after a start): remember its alias, it beats the DHCP name
+            unifi_name = ex.get("name") if ex.get("online") else meta.get("unifi_name")
             # UniFi, the DHCP lease and the DNS hint go away when the device is off: keep the last name they gave
-            auto_name = ex.get("name") or hostname or hint
+            auto_name = unifi_name or hostname or hint
             last_name = auto_name or meta.get("last_name")
             dev = {
                 "mac": mac,
@@ -384,16 +405,19 @@ class Devices:
                     mac_if[mac] = netif
             changed = (meta.get("online_since") != online_since or not meta or
                        (online and (t - (meta.get("last_seen") or 0)) > 60) or meta.get("last_ip") != primary_v4 or
-                       meta.get("last_name") != last_name)
+                       meta.get("last_name") != last_name or meta.get("unifi_name") != unifi_name)
             if changed:
                 meta_updates.append((mac, meta.get("name"), meta.get("icon"), meta.get("note"), int(first_seen),
-                                     int(last_sign or t), online_since, primary_v4, netif, last_name))
+                                     int(last_sign or t), online_since, primary_v4, netif, last_name, unifi_name))
                 self.meta[mac] = {**meta, "first_seen": int(first_seen), "last_seen": int(last_sign or t),
-                                  "online_since": online_since, "last_ip": primary_v4, "last_if": netif, "last_name": last_name}
+                                  "online_since": online_since, "last_ip": primary_v4, "last_if": netif, "last_name": last_name,
+                                  "unifi_name": unifi_name}
         self.db.many(
-            "INSERT INTO device(mac,name,icon,note,first_seen,last_seen,online_since,last_ip,last_if,last_name) VALUES(?,?,?,?,?,?,?,?,?,?) "
+            "INSERT INTO device(mac,name,icon,note,first_seen,last_seen,online_since,last_ip,last_if,last_name,unifi_name) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(mac) DO UPDATE SET first_seen=excluded.first_seen, last_seen=excluded.last_seen, "
-            "online_since=excluded.online_since, last_ip=excluded.last_ip, last_if=excluded.last_if, last_name=excluded.last_name",
+            "online_since=excluded.online_since, last_ip=excluded.last_ip, last_if=excluded.last_if, last_name=excluded.last_name, "
+            "unifi_name=excluded.unifi_name",
             meta_updates)
         with self.lock:
             self.ip2mac = ip2mac

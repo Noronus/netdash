@@ -91,6 +91,8 @@ class DB:
             self.conn.execute("ALTER TABLE device ADD COLUMN place TEXT")
         if "last_name" not in cols:  # last name from UniFi / DHCP / DNS, kept while the device is off
             self.conn.execute("ALTER TABLE device ADD COLUMN last_name TEXT")
+        if "unifi_name" not in cols:  # alias set in UniFi, outranks DHCP / DNS names even while UniFi does not list the device
+            self.conn.execute("ALTER TABLE device ADD COLUMN unifi_name TEXT")
         self.conn.commit()
 
     def q(self, sql, args=()):
